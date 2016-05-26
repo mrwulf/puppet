@@ -43,7 +43,7 @@ class Puppet::Indirector::Face < Puppet::Face
     rescue => detail
       message = "Could not call '#{method}' on '#{indirection_name}': #{detail}"
       Puppet.log_exception(detail, message)
-      raise message
+      raise RuntimeError, message, detail.backtrace
     end
 
     return result
@@ -67,8 +67,17 @@ class Puppet::Indirector::Face < Puppet::Face
 
   action :find do
     summary "Retrieve an object by name."
-    arguments "<key>"
-    when_invoked {|key, options| call_indirection_method :find, key, options[:extra] }
+    arguments "[<key>]"
+    when_invoked do |*args|
+      # Default the key to Puppet[:certname] if none is supplied
+      if args.length == 1
+        key = Puppet[:certname]
+        options = args.last
+      else
+        key, options = *args
+      end
+      call_indirection_method :find, key, options[:extra]
+    end
   end
 
   action :save do
@@ -132,7 +141,8 @@ class Puppet::Indirector::Face < Puppet::Face
     begin
       indirection.terminus_class = from
     rescue => detail
-      raise "Could not set '#{indirection.name}' terminus to '#{from}' (#{detail}); valid terminus types are #{self.class.terminus_classes(indirection.name).join(", ") }"
+      msg = "Could not set '#{indirection.name}' terminus to '#{from}' (#{detail}); valid terminus types are #{self.class.terminus_classes(indirection.name).join(", ") }"
+      raise detail, msg, detail.backtrace
     end
   end
 end

@@ -2,7 +2,7 @@
 
 require 'spec_helper'
 
-describe Puppet::Type.type(:user).provider(:windows_adsi) do
+describe Puppet::Type.type(:user).provider(:windows_adsi), :if => Puppet.features.microsoft_windows? do
   let(:resource) do
     Puppet::Type.type(:user).new(
       :title => 'testuser',
@@ -16,35 +16,37 @@ describe Puppet::Type.type(:user).provider(:windows_adsi) do
   let(:connection) { stub 'connection' }
 
   before :each do
-    Puppet::Util::ADSI.stubs(:computer_name).returns('testcomputername')
-    Puppet::Util::ADSI.stubs(:connect).returns connection
+    Puppet::Util::Windows::ADSI.stubs(:computer_name).returns('testcomputername')
+    Puppet::Util::Windows::ADSI.stubs(:connect).returns connection
   end
 
   describe ".instances" do
     it "should enumerate all users" do
       names = ['user1', 'user2', 'user3']
       stub_users = names.map{|n| stub(:name => n)}
-      connection.stubs(:execquery).with("select name from win32_useraccount").returns(stub_users)
+      connection.stubs(:execquery).with('select name from win32_useraccount where localaccount = "TRUE"').returns(stub_users)
 
-      described_class.instances.map(&:name).should =~ names
+      expect(described_class.instances.map(&:name)).to match(names)
     end
   end
 
-  it "should provide access to a Puppet::Util::ADSI::User object" do
-    provider.user.should be_a(Puppet::Util::ADSI::User)
+  it "should provide access to a Puppet::Util::Windows::ADSI::User object" do
+    expect(provider.user).to be_a(Puppet::Util::Windows::ADSI::User)
   end
 
   describe "when managing groups" do
-    it 'should return the list of groups as a comma-separated list' do
-      provider.user.stubs(:groups).returns ['group1', 'group2', 'group3']
+    it 'should return the list of groups as an array of strings' do
+      provider.user.stubs(:groups).returns nil
+      groups = {'group1' => nil, 'group2' => nil, 'group3' => nil}
+      Puppet::Util::Windows::ADSI::Group.expects(:name_sid_hash).returns(groups)
 
-      provider.groups.should == 'group1,group2,group3'
+      expect(provider.groups).to eq(groups.keys)
     end
 
-    it "should return absent if there are no groups" do
+    it "should return an empty array if there are no groups" do
       provider.user.stubs(:groups).returns []
 
-      provider.groups.should == ''
+      expect(provider.groups).to eq([])
     end
 
     it 'should be able to add a user to a set of groups' do
@@ -60,6 +62,112 @@ describe Puppet::Type.type(:user).provider(:windows_adsi) do
     end
   end
 
+  describe "#groups_insync?" do
+
+    let(:group1) { stub(:account => 'group1', :domain => '.', :sid => 'group1sid') }
+    let(:group2) { stub(:account => 'group2', :domain => '.', :sid => 'group2sid') }
+    let(:group3) { stub(:account => 'group3', :domain => '.', :sid => 'group3sid') }
+
+    before :each do
+      Puppet::Util::Windows::SID.stubs(:name_to_sid_object).with('group1').returns(group1)
+      Puppet::Util::Windows::SID.stubs(:name_to_sid_object).with('group2').returns(group2)
+      Puppet::Util::Windows::SID.stubs(:name_to_sid_object).with('group3').returns(group3)
+    end
+
+    it "should return true for same lists of members" do
+      expect(provider.groups_insync?(['group1', 'group2'], ['group1', 'group2'])).to be_truthy
+    end
+
+    it "should return true for same lists of unordered members" do
+      expect(provider.groups_insync?(['group1', 'group2'], ['group2', 'group1'])).to be_truthy
+    end
+
+    it "should return true for same lists of members irrespective of duplicates" do
+      expect(provider.groups_insync?(['group1', 'group2', 'group2'], ['group2', 'group1', 'group1'])).to be_truthy
+    end
+
+    it "should return true when current group(s) and should group(s) are empty lists" do
+      expect(provider.groups_insync?([], [])).to be_truthy
+    end
+
+    it "should return true when current groups is empty and should groups is nil" do
+      expect(provider.groups_insync?([], nil)).to be_truthy
+    end
+
+    context "when membership => inclusive" do
+      before :each do
+        resource[:membership] = :inclusive
+      end
+
+      it "should return false when current contains different groups than should" do
+        expect(provider.groups_insync?(['group1'], ['group2'])).to be_falsey
+      end
+
+      it "should return false when current is nil" do
+        expect(provider.groups_insync?(nil, ['group2'])).to be_falsey
+      end
+
+      it "should return false when should is nil" do
+        expect(provider.groups_insync?(['group1'], nil)).to be_falsey
+      end
+
+      it "should return false when current contains members and should is empty" do
+        expect(provider.groups_insync?(['group1'], [])).to be_falsey
+      end
+
+      it "should return false when current is empty and should contains members" do
+        expect(provider.groups_insync?([], ['group2'])).to be_falsey
+      end
+
+      it "should return false when should groups(s) are not the only items in the current" do
+        expect(provider.groups_insync?(['group1', 'group2'], ['group1'])).to be_falsey
+      end
+
+      it "should return false when current group(s) is not empty and should is an empty list" do
+        expect(provider.groups_insync?(['group1','group2'], [])).to be_falsey
+      end
+    end
+
+    context "when membership => minimum" do
+      before :each do
+        # this is also the default
+        resource[:membership] = :minimum
+      end
+
+      it "should return false when current contains different groups than should" do
+        expect(provider.groups_insync?(['group1'], ['group2'])).to be_falsey
+      end
+
+      it "should return false when current is nil" do
+        expect(provider.groups_insync?(nil, ['group2'])).to be_falsey
+      end
+
+      it "should return true when should is nil" do
+        expect(provider.groups_insync?(['group1'], nil)).to be_truthy
+      end
+
+      it "should return true when current contains members and should is empty" do
+        expect(provider.groups_insync?(['group1'], [])).to be_truthy
+      end
+
+      it "should return false when current is empty and should contains members" do
+        expect(provider.groups_insync?([], ['group2'])).to be_falsey
+      end
+
+      it "should return true when current group(s) contains at least the should list" do
+        expect(provider.groups_insync?(['group1','group2'], ['group1'])).to be_truthy
+      end
+
+      it "should return true when current group(s) is not empty and should is an empty list" do
+        expect(provider.groups_insync?(['group1','group2'], [])).to be_truthy
+      end
+
+      it "should return true when current group(s) contains at least the should list, even unordered" do
+        expect(provider.groups_insync?(['group3','group1','group2'], ['group2','group1'])).to be_truthy
+      end
+    end
+  end
+
   describe "when creating a user" do
     it "should create the user on the system and set its other properties" do
       resource[:groups]     = ['group1', 'group2']
@@ -68,7 +176,7 @@ describe Puppet::Type.type(:user).provider(:windows_adsi) do
       resource[:home]       = 'C:\Users\testuser'
 
       user = stub 'user'
-      Puppet::Util::ADSI::User.expects(:create).with('testuser').returns user
+      Puppet::Util::Windows::ADSI::User.expects(:create).with('testuser').returns user
 
       user.stubs(:groups).returns(['group2', 'group3'])
 
@@ -82,12 +190,12 @@ describe Puppet::Type.type(:user).provider(:windows_adsi) do
       provider.create
     end
 
-    it "should load the profile if managehome is set", :if => Puppet.features.microsoft_windows? do
+    it "should load the profile if managehome is set" do
       resource[:password] = '0xDeadBeef'
       resource[:managehome] = true
 
       user = stub_everything 'user'
-      Puppet::Util::ADSI::User.expects(:create).with('testuser').returns user
+      Puppet::Util::Windows::ADSI::User.expects(:create).with('testuser').returns user
       Puppet::Util::Windows::User.expects(:load_profile).with('testuser', '0xDeadBeef')
 
       provider.create
@@ -103,7 +211,7 @@ describe Puppet::Type.type(:user).provider(:windows_adsi) do
       resource[:password] = 'plaintext'
       provider.user.expects(:password_is?).with('plaintext').returns true
 
-      provider.password.should == 'plaintext'
+      expect(provider.password).to eq('plaintext')
 
     end
 
@@ -111,22 +219,37 @@ describe Puppet::Type.type(:user).provider(:windows_adsi) do
       resource[:password] = 'plaintext'
       provider.user.expects(:password_is?).with('plaintext').returns false
 
-      provider.password.should == :absent
+      expect(provider.password).to be_nil
     end
 
     it 'should not create a user if a group by the same name exists' do
-      Puppet::Util::ADSI::User.expects(:create).with('testuser').raises( Puppet::Error.new("Cannot create user if group 'testuser' exists.") )
+      Puppet::Util::Windows::ADSI::User.expects(:create).with('testuser').raises( Puppet::Error.new("Cannot create user if group 'testuser' exists.") )
       expect{ provider.create }.to raise_error( Puppet::Error,
         /Cannot create user if group 'testuser' exists./ )
+    end
+
+    it "should fail with an actionable message when trying to create an active directory user" do
+      resource[:name] = 'DOMAIN\testdomainuser'
+      Puppet::Util::Windows::ADSI::Group.expects(:exists?).with(resource[:name]).returns(false)
+      connection.expects(:Create)
+      connection.expects(:Get).with('UserFlags')
+      connection.expects(:Put).with('UserFlags', true)
+      connection.expects(:SetInfo).raises( WIN32OLERuntimeError.new("(in OLE method `SetInfo': )\n    OLE error code:8007089A in Active Directory\n      The specified username is invalid.\r\n\n    HRESULT error code:0x80020009\n      Exception occurred."))
+
+      expect{ provider.create }.to raise_error(
+        Puppet::Error,
+        /not able to create\/delete domain users/
+      )
     end
   end
 
   it 'should be able to test whether a user exists' do
-    Puppet::Util::ADSI.stubs(:connect).returns stub('connection')
-    provider.should be_exists
+    Puppet::Util::Windows::SID.stubs(:name_to_sid_object).returns(nil)
+    Puppet::Util::Windows::ADSI.stubs(:connect).returns stub('connection', :Class => 'User')
+    expect(provider).to be_exists
 
-    Puppet::Util::ADSI.stubs(:connect).returns nil
-    provider.should_not be_exists
+    Puppet::Util::Windows::ADSI.stubs(:connect).returns nil
+    expect(provider).not_to be_exists
   end
 
   it 'should be able to delete a user' do
@@ -135,12 +258,20 @@ describe Puppet::Type.type(:user).provider(:windows_adsi) do
     provider.delete
   end
 
-  it 'should delete the profile if managehome is set', :if => Puppet.features.microsoft_windows? do
+  it 'should not run commit on a deleted user' do
+    connection.expects(:Delete).with('user', 'testuser')
+    connection.expects(:SetInfo).never
+
+    provider.delete
+    provider.flush
+  end
+
+  it 'should delete the profile if managehome is set' do
     resource[:managehome] = true
 
     sid = 'S-A-B-C'
-    Puppet::Util::Windows::Security.expects(:name_to_sid).with('testuser').returns(sid)
-    Puppet::Util::ADSI::UserProfile.expects(:delete).with(sid)
+    Puppet::Util::Windows::SID.expects(:name_to_sid).with('testuser').returns(sid)
+    Puppet::Util::Windows::ADSI::UserProfile.expects(:delete).with(sid)
     connection.expects(:Delete).with('user', 'testuser')
 
     provider.delete
@@ -152,10 +283,10 @@ describe Puppet::Type.type(:user).provider(:windows_adsi) do
     provider.flush
   end
 
-  it "should return the user's SID as uid", :if => Puppet.features.microsoft_windows? do
-    Puppet::Util::Windows::Security.expects(:name_to_sid).with('testuser').returns('S-1-5-21-1362942247-2130103807-3279964888-1111')
+  it "should return the user's SID as uid" do
+    Puppet::Util::Windows::SID.expects(:name_to_sid).with('testuser').returns('S-1-5-21-1362942247-2130103807-3279964888-1111')
 
-    provider.uid.should == 'S-1-5-21-1362942247-2130103807-3279964888-1111'
+    expect(provider.uid).to eq('S-1-5-21-1362942247-2130103807-3279964888-1111')
   end
 
   it "should fail when trying to manage the uid property" do

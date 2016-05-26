@@ -1,47 +1,48 @@
 test_name 'puppet module uninstall (with environment)'
+require 'puppet/acceptance/module_utils'
+extend Puppet::Acceptance::ModuleUtils
+
+tmpdir = master.tmpdir('module-uninstall-with-environment')
 
 step 'Setup'
 
 stub_forge_on(master)
 
+puppet_conf = generate_base_directory_environments(tmpdir)
+
+crakorn_metadata = <<-EOS
+{
+ "name": "jimmy/crakorn",
+ "version": "0.4.0",
+ "source": "",
+ "author": "jimmy",
+ "license": "MIT",
+ "dependencies": []
+}
+EOS
+
 # Configure a non-default environment
-on master, 'rm -rf /usr/share/puppet/modules /etc/puppet/testenv'
-apply_manifest_on master, %q{
+apply_manifest_on master, %Q{
   file {
     [
-      '/usr/share/puppet/modules',
-      '/etc/puppet/testenv',
-      '/etc/puppet/testenv/modules',
-      '/etc/puppet/testenv/modules/crakorn',
+      '#{tmpdir}/environments/direnv/modules',
+      '#{tmpdir}/environments/direnv/modules/crakorn',
     ]:
       ensure => directory,
   }
   file {
-    '/etc/puppet/testenv/modules/crakorn/metadata.json':
-      content => '{
-        "name": "jimmy/crakorn",
-        "version": "0.4.0",
-        "source": "",
-        "author": "jimmy",
-        "license": "MIT",
-        "dependencies": []
-      }',
-  }
-  file {
-    '/etc/puppet/puppet2.conf':
-      source => $settings::config,
+    '#{tmpdir}/environments/direnv/modules/crakorn/metadata.json':
+      content => '#{crakorn_metadata}',
   }
 }
-on master, '{ echo "[testenv]"; echo "modulepath=/etc/puppet/testenv/modules"; } >> /etc/puppet/puppet2.conf'
-teardown do
-on master, 'rm -rf /usr/share/puppet/modules /etc/puppet/testenv /etc/puppet/puppet2.conf'
-end
 
-step 'Uninstall a module from a non default environment'
-on master, 'puppet module uninstall jimmy-crakorn --config=/etc/puppet/puppet2.conf --environment=testenv' do
-  assert_output <<-OUTPUT
-    \e[mNotice: Preparing to uninstall 'jimmy-crakorn' ...\e[0m
-    Removed 'jimmy-crakorn' (\e[0;36mv0.4.0\e[0m) from /etc/puppet/testenv/modules
-  OUTPUT
+step 'Uninstall a module from a non default directory environment' do
+  environment_path = "#{tmpdir}/environments/direnv/modules"
+  on(master, puppet("module uninstall jimmy-crakorn --config=#{puppet_conf} --environment=direnv")) do
+    assert_equal <<-OUTPUT, stdout
+\e[mNotice: Preparing to uninstall 'jimmy-crakorn' ...\e[0m
+Removed 'jimmy-crakorn' (\e[0;36mv0.4.0\e[0m) from #{environment_path}
+    OUTPUT
+  end
+  on master, "[ ! -d #{environment_path}/crackorn ]"
 end
-on master, '[ ! -d /etc/puppet/testenv/modules/crakorn ]'

@@ -70,14 +70,14 @@ class Puppet::FileServing::Fileset
 
   def ignore=(values)
     values = [values] unless values.is_a?(Array)
-    @ignore = values
+    @ignore = values.collect(&:to_s)
   end
 
   def links=(links)
     links = links.to_sym
     raise(ArgumentError, "Invalid :links value '#{links}'") unless [:manage, :follow].include?(links)
     @links = links
-    @stat_method = File.method(@links == :manage ? :lstat : :stat)
+    @stat_method = @links == :manage ? :lstat : :stat
   end
 
   private
@@ -88,7 +88,7 @@ class Puppet::FileServing::Fileset
       begin
         send(method, value)
       rescue NoMethodError
-        raise ArgumentError, "Invalid option '#{option}'"
+        raise ArgumentError, "Invalid option '#{option}'", $!.backtrace
       end
     end
   end
@@ -133,7 +133,7 @@ class Puppet::FileServing::Fileset
     end
 
     def directory?
-      stat_method.call(path).directory?
+      Puppet::FileSystem.send(stat_method, path).directory?
     rescue Errno::ENOENT, Errno::EACCES
       false
     end
@@ -159,7 +159,7 @@ class Puppet::FileServing::Fileset
   end
 
   def valid?(path)
-    @stat_method.call(path)
+    Puppet::FileSystem.send(@stat_method, path)
     true
   rescue Errno::ENOENT, Errno::EACCES
     false

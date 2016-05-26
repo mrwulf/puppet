@@ -17,8 +17,8 @@ def moresetup(agent)
 end
 
 def moreclean(agent)
-  on agent, "zfs destroy -r tstpool"
-  on agent, "zpool destroy tstpool"
+  on agent, "zfs destroy -r tstpool", :acceptable_exit_codes => [0,1]
+  on agent, "zpool destroy tstpool", :acceptable_exit_codes => [0,1]
   on agent, "rm -f /tstzones/dsk"
 end
 
@@ -47,22 +47,22 @@ agents.each do |agent|
   end
   step "Zone: dataset - basic test, a single data set should change to another"
   apply_manifest_on(agent,'zone {tstzone : ensure=>configured, dataset=>"tstpool/yy", path=>"/tstzones/mnt" }') do
-    assert_match(/dataset changed 'tstpool.xx' to .'tstpool.yy'./, result.stdout, "err: #{agent}")
+    assert_match(/dataset changed 'tstpool.xx'.* to .'tstpool.yy'./, result.stdout, "err: #{agent}")
   end
   step "Zone: dataset - basic test, idempotency"
   apply_manifest_on(agent,'zone {tstzone : ensure=>configured, dataset=>"tstpool/yy", path=>"/tstzones/mnt" }') do
-    assert_no_match(/dataset changed 'tstpool.xx' to .'tstpool.yy'./, result.stdout, "err: #{agent}")
+    assert_no_match(/dataset changed 'tstpool.xx'.* to .'tstpool.yy'./, result.stdout, "err: #{agent}")
   end
   step "Zone: dataset - array test, should change to an array"
   apply_manifest_on(agent,'zone {tstzone : ensure=>configured, dataset=>["tstpool/yy","tstpool/zz"], path=>"/tstzones/mnt" }') do
-    assert_match(/dataset changed 'tstpool.yy' to .'tstpool.yy', 'tstpool.zz'./, result.stdout, "err: #{agent}")
+    assert_match(/dataset changed 'tstpool.yy'.* to .'tstpool.yy', 'tstpool.zz'./, result.stdout, "err: #{agent}")
   end
   step "Zone: dataset - array test, should change one single element"
   apply_manifest_on(agent,'zone {tstzone : ensure=>configured, dataset=>["tstpool/xx","tstpool/zz"], path=>"/tstzones/mnt" }') do
-    assert_match(/dataset changed 'tstpool.yy,tstpool.zz' to .'tstpool.xx', 'tstpool.zz'./, result.stdout, "err: #{agent}")
+    assert_match(/dataset changed 'tstpool.yy,tstpool.zz'.* to .'tstpool.xx', 'tstpool.zz'./, result.stdout, "err: #{agent}")
   end
   step "Zone: dataset - array test, should remove elements"
   apply_manifest_on(agent,'zone {tstzone : ensure=>configured, dataset=>[], path=>"/tstzones/mnt" }') do
-    assert_match(/dataset changed 'tstpool.zz,tstpool.xx' to ../, result.stdout, "err: #{agent}")
+    assert_match(/dataset changed 'tstpool.zz,tstpool.xx'.* to ../, result.stdout, "err: #{agent}")
   end
 end

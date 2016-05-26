@@ -20,8 +20,7 @@ Puppet::Type.newtype(:file) do
   @doc = "Manages files, including their content, ownership, and permissions.
 
     The `file` type can manage normal files, directories, and symlinks; the
-    type should be specified in the `ensure` attribute. Note that symlinks cannot
-    be managed on Windows systems.
+    type should be specified in the `ensure` attribute.
 
     File contents can be managed directly with the `content` attribute, or
     downloaded from a remote source using the `source` attribute; the latter
@@ -33,6 +32,9 @@ Puppet::Type.newtype(:file) do
     **Autorequires:** If Puppet is managing the user or group that owns a
     file, the file resource will autorequire them. If Puppet is managing any
     parent directories of a file, the file resource will autorequire them."
+
+  feature :manages_symlinks,
+    "The provider can manage symbolic links."
 
   def self.title_patterns
     [ [ /^(.*?)\/*\Z/m, [ [ :path ] ] ] ]
@@ -88,7 +90,7 @@ Puppet::Type.newtype(:file) do
       filebucket resource and a resource default for the `backup` attribute
       in site.pp:
 
-          # /etc/puppet/manifests/site.pp
+          # /etc/puppetlabs/puppet/manifests/site.pp
           filebucket { 'main':
             path   => false,                # This is required for remote filebuckets.
             server => 'puppet.example.com', # Optional; defaults to the configured puppet master.
@@ -123,25 +125,41 @@ Puppet::Type.newtype(:file) do
   end
 
   newparam(:recurse) do
-    desc "Whether and how deeply to do recursive
-      management. Options are:
+    desc "Whether to recursively manage the _contents_ of a directory. This attribute
+      is only used when `ensure => directory` is set. The allowed values are:
 
-      * `inf,true` --- Regular style recursion on both remote and local
-        directory structure.
-      * `remote` --- Descends recursively into the remote directory
-        but not the local directory. Allows copying of
-        a few files into a directory containing many
-        unmanaged files without scanning all the local files.
-      * `false` --- Default of no recursion.
+      * `false` --- The default behavior. The contents of the directory will not be
+        automatically managed.
+      * `remote` --- If the `source` attribute is set, Puppet will automatically
+        manage the contents of the source directory (or directories), ensuring
+        that equivalent files and directories exist on the target system and
+        that their contents match.
+
+        Using `remote` will disable the `purge` attribute, but results in faster
+        catalog application than `recurse => true`.
+
+        The `source` attribute is mandatory when `recurse => remote`.
+      * `true` --- If the `source` attribute is set, this behaves similarly to
+        `recurse => remote`, automatically managing files from the source directory.
+
+        This also enables the `purge` attribute, which can delete unmanaged
+        files from a directory. See the description of `purge` for more details.
+
+        The `source` attribute is not mandatory when using `recurse => true`, so you
+        can enable purging in directories where all files are managed individually.
+
+      By default, setting recurse to `remote` or `true` will manage _all_
+      subdirectories. You can use the `recurselimit` attribute to limit the
+      recursion depth.
     "
 
-    newvalues(:true, :false, :inf, :remote)
+    newvalues(:true, :false, :remote)
 
     validate { |arg| }
     munge do |value|
       newval = super(value)
       case newval
-      when :true, :inf; true
+      when :true; true
       when :false; false
       when :remote; :remote
       else
@@ -151,7 +169,24 @@ Puppet::Type.newtype(:file) do
   end
 
   newparam(:recurselimit) do
-    desc "How deeply to do recursive management."
+    desc "How far Puppet should descend into subdirectories, when using
+      `ensure => directory` and either `recurse => true` or `recurse => remote`.
+      The recursion limit affects which files will be copied from the `source`
+      directory, as well as which files can be purged when `purge => true`.
+
+      Setting `recurselimit => 0` is the same as setting `recurse => false` ---
+      Puppet will manage the directory, but all of its contents will be treated
+      as unmanaged.
+
+      Setting `recurselimit => 1` will manage files and directories that are
+      directly inside the directory, but will not manage the contents of any
+      subdirectories.
+
+      Setting `recurselimit => 2` will manage the direct contents of the
+      directory, as well as the contents of the _first_ level of subdirectories.
+
+      And so on --- 3 will manage the contents of the second level of
+      subdirectories, etc."
 
     newvalues(/^[0-9]+$/)
 
@@ -201,11 +236,9 @@ Puppet::Type.newtype(:file) do
 
   newparam(:links) do
     desc "How to handle links during file actions.  During file copying,
-      `follow` will copy the target file instead of the link, `manage`
-      will copy the link itself, and `ignore` will just pass it by.
-      When not copying, `manage` and `ignore` behave equivalently
-      (because you cannot really ignore links entirely during local
-      recursion), and `follow` will manage the file to which the link points."
+      `follow` will copy the target file instead of the link and `manage`
+      will copy the link itself. When not copying, `manage` will manage
+      the link, and `follow` will manage the file to which the link points."
 
     newvalues(:follow, :manage)
 
@@ -214,7 +247,7 @@ Puppet::Type.newtype(:file) do
 
   newparam(:purge, :boolean => true, :parent => Puppet::Parameter::Boolean) do
     desc "Whether unmanaged files should be purged. This option only makes
-      sense when managing directories with `recurse => true`.
+      sense when `ensure => directory` and `recurse => true`.
 
       * When recursively duplicating an entire directory with the `source`
         attribute, `purge => true` will automatically purge any files
@@ -224,7 +257,14 @@ Puppet::Type.newtype(:file) do
         specifically managed.
 
       If you have a filebucket configured, the purged files will be uploaded,
-      but if you do not, this will destroy data."
+      but if you do not, this will destroy data.
+
+      Unless `force => true` is set, purging will **not** delete directories,
+      although it will delete the files they contain.
+
+      If `recurselimit` is set and you aren't using `force => true`, purging
+      will obey the recursion limit; files in any subdirectories deeper than the
+      limit will be treated as unmanaged and left alone."
 
     defaultto :false
   end
@@ -246,10 +286,42 @@ Puppet::Type.newtype(:file) do
     desc "Whether to display differences when the file changes, defaulting to
         true.  This parameter is useful for files that may contain passwords or
         other secret data, which might otherwise be included in Puppet reports or
-        other insecure outputs.  If the global ``show_diff` configuration parameter
+        other insecure outputs.  If the global `show_diff` setting
         is false, then no diffs will be shown even if this parameter is true."
 
     defaultto :true
+  end
+
+  newparam(:validate_cmd) do
+    desc "A command for validating the file's syntax before replacing it. If
+      Puppet would need to rewrite a file due to new `source` or `content`, it
+      will check the new content's validity first. If validation fails, the file
+      resource will fail.
+
+      This command must have a fully qualified path, and should contain a
+      percent (`%`) token where it would expect an input file. It must exit `0`
+      if the syntax is correct, and non-zero otherwise. The command will be
+      run on the target system while applying the catalog, not on the puppet master.
+
+      Example:
+
+          file { '/etc/apache2/apache2.conf':
+            content      => 'example',
+            validate_cmd => '/usr/sbin/apache2 -t -f %',
+          }
+
+      This would replace apache2.conf only if the test returned true.
+
+      Note that if a validation command requires a `%` as part of its text,
+      you can specify a different placeholder token with the
+      `validate_replacement` attribute."
+  end
+
+  newparam(:validate_replacement) do
+    desc "The replacement string in a `validate_cmd` that will be replaced
+      with an input file name. Defaults to: `%`"
+
+    defaultto '%'
   end
 
   # Autorequire the nearest ancestor directory found in the catalog.
@@ -293,9 +365,10 @@ Puppet::Type.newtype(:file) do
       creator_count += 1 if self.should(param)
     end
     creator_count += 1 if @parameters.include?(:source)
+
     self.fail "You cannot specify more than one of #{CREATORS.collect { |p| p.to_s}.join(", ")}" if creator_count > 1
 
-    self.fail "You cannot specify a remote recursion without a source" if !self[:source] and self[:recurse] == :remote
+    self.fail "You cannot specify a remote recursion without a source" if !self[:source] && self[:recurse] == :remote
 
     self.fail "You cannot specify source when using checksum 'none'" if self[:checksum] == :none && !self[:source].nil?
 
@@ -303,7 +376,18 @@ Puppet::Type.newtype(:file) do
       self.fail "You cannot specify content when using checksum '#{checksum_type}'" if self[:checksum] == checksum_type && !self[:content].nil?
     end
 
-    self.warning "Possible error: recurselimit is set but not recurse, no recursion will happen" if !self[:recurse] and self[:recurselimit]
+    self.warning "Possible error: recurselimit is set but not recurse, no recursion will happen" if !self[:recurse] && self[:recurselimit]
+
+    if @parameters[:content] && @parameters[:content].actual_content
+      # Now that we know the checksum, update content (in case it was created before checksum was known).
+      @parameters[:content].value = @parameters[:checksum].sum(@parameters[:content].actual_content)
+    end
+
+    if self[:checksum] && self[:checksum_value] && !send("#{self[:checksum]}?", self[:checksum_value])
+      self.fail "Checksum value '#{self[:checksum_value]}' is not a valid checksum type #{self[:checksum]}"
+    end
+
+    self.warning "Checksum value is ignored unless content or source are specified" if self[:checksum_value] && !self[:content] && !self[:source]
 
     provider.validate if provider.respond_to?(:validate)
   end
@@ -319,7 +403,7 @@ Puppet::Type.newtype(:file) do
 
   # Determine the user to write files as.
   def asuser
-    if self.should(:owner) and ! self.should(:owner).is_a?(Symbol)
+    if self.should(:owner) && ! self.should(:owner).is_a?(Symbol)
       writeable = Puppet::Util::SUIDManager.asuser(self.should(:owner)) {
         FileTest.writable?(::File.dirname(self[:path]))
       }
@@ -363,6 +447,10 @@ Puppet::Type.newtype(:file) do
   # we have a stat
   def exist?
     stat ? true : false
+  end
+
+  def present?(current_values)
+    super && current_values[:ensure] != :false
   end
 
   # We have to do some extra finishing, to retrieve our bucket if
@@ -488,22 +576,29 @@ Puppet::Type.newtype(:file) do
     remove_less_specific_files(result)
   end
 
+  def remove_less_specific_files(files)
+    existing_files = catalog.vertices.select { |r| r.is_a?(self.class) }
+    self.class.remove_less_specific_files(files, self[:path], existing_files) do |file|
+      file[:path]
+    end
+  end
+
   # This is to fix bug #2296, where two files recurse over the same
   # set of files.  It's a rare case, and when it does happen you're
   # not likely to have many actual conflicts, which is good, because
   # this is a pretty inefficient implementation.
-  def remove_less_specific_files(files)
+  def self.remove_less_specific_files(files, parent_path, existing_files, &block)
     # REVISIT: is this Windows safe?  AltSeparator?
-    mypath = self[:path].split(::File::Separator)
-    other_paths = catalog.vertices.
-      select  { |r| r.is_a?(self.class) and r[:path] != self[:path] }.
-      collect { |r| r[:path].split(::File::Separator) }.
+    mypath = parent_path.split(::File::Separator)
+    other_paths = existing_files.
+      select { |r| (yield r) != parent_path}.
+      collect { |r| (yield r).split(::File::Separator) }.
       select  { |p| p[0,mypath.length]  == mypath }
 
     return files if other_paths.empty?
 
     files.reject { |file|
-      path = file[:path].split(::File::Separator)
+      path = (yield file).split(::File::Separator)
       other_paths.any? { |p| path[0,p.length] == p }
       }
   end
@@ -546,12 +641,43 @@ Puppet::Type.newtype(:file) do
 
   # Recurse against our remote file.
   def recurse_remote(children)
+    recurse_remote_metadata.each do |meta|
+      if meta.relative_path == "."
+        self[:checksum] = meta.checksum_type
+        parameter(:source).metadata = meta
+        next
+      end
+      children[meta.relative_path] ||= newchild(meta.relative_path)
+      children[meta.relative_path][:source] = meta.source
+      children[meta.relative_path][:checksum] = meta.checksum_type
+      children[meta.relative_path].parameter(:source).metadata = meta
+    end
+
+    children
+  end
+
+  def recurse_remote_metadata
     sourceselect = self[:sourceselect]
 
     total = self[:source].collect do |source|
-      next unless result = perform_recursion(source)
-      return if top = result.find { |r| r.relative_path == "." } and top.ftype != "directory"
-      result.each { |data| data.source = "#{source}/#{data.relative_path}" }
+      # For each inlined file resource, the catalog contains a hash mapping
+      # source path to lists of metadata returned by a server-side search.
+      if recursive_metadata = catalog.recursive_metadata[title]
+        result = recursive_metadata[source]
+      else
+        result = perform_recursion(source)
+      end
+
+      next unless result
+      return [] if top = result.find { |r| r.relative_path == "." } and top.ftype != "directory"
+      result.each do |data|
+        if data.relative_path == '.'
+          data.source = source
+        else
+          # REMIND: appending file paths to URL may not be safe, e.g. foo+bar
+          data.source = "#{source}/#{data.relative_path}"
+        end
+      end
       break result if result and ! result.empty? and sourceselect == :first
       result
     end.flatten.compact
@@ -561,24 +687,12 @@ Puppet::Type.newtype(:file) do
       found = []
       total.reject! do |data|
         result = found.include?(data.relative_path)
-        found << data.relative_path unless found.include?(data.relative_path)
+        found << data.relative_path unless result
         result
       end
     end
 
-    total.each do |meta|
-      if meta.relative_path == "."
-        parameter(:source).metadata = meta
-        next
-      end
-      children[meta.relative_path] ||= newchild(meta.relative_path)
-      children[meta.relative_path][:source] = meta.source
-      children[meta.relative_path][:checksum] = :md5 if meta.ftype == "file"
-
-      children[meta.relative_path].parameter(:source).metadata = meta
-    end
-
-    children
+    total
   end
 
   def perform_recursion(path)
@@ -587,9 +701,10 @@ Puppet::Type.newtype(:file) do
       :links => self[:links],
       :recurse => (self[:recurse] == :remote ? true : self[:recurse]),
       :recurselimit => self[:recurselimit],
+      :source_permissions => self[:source_permissions],
       :ignore => self[:ignore],
       :checksum_type => (self[:source] || self[:content]) ? self[:checksum] : :none,
-      :environment => catalog.environment
+      :environment => catalog.environment_instance
     )
   end
 
@@ -625,7 +740,27 @@ Puppet::Type.newtype(:file) do
   end
 
   def retrieve
-    if source = parameter(:source)
+    # This check is done in retrieve to ensure it happens before we try to use
+    # metadata in `copy_source_values`, but so it only fails the resource and not
+    # catalog validation (because that would be a breaking change from Puppet 4).
+    if Puppet.features.microsoft_windows? && parameter(:source) &&
+      [:use, :use_when_creating].include?(self[:source_permissions])
+      err_msg = "Copying owner/mode/group from the source file on Windows" <<
+      " is not supported; use source_permissions => ignore."
+
+      if self[:owner] == nil || self[:group] == nil || self[:mode] == nil
+        # Fail on Windows if source permissions are being used and the file resource
+        # does not have mode owner, group, and mode all set (which would take precedence).
+        self.fail err_msg
+      else
+        # Warn if use source permissions is specified on Windows
+        self.warning err_msg
+      end
+    end
+
+    # `checksum_value` implies explicit management of all metadata, so skip metadata
+    # retrieval. Otherwise, if source is set, retrieve metadata for source.
+    if (source = parameter(:source)) && property(:checksum_value).nil?
       source.copy_source_values
     end
     super
@@ -687,7 +822,7 @@ Puppet::Type.newtype(:file) do
     end
 
     @stat = begin
-      ::File.send(method, self[:path])
+      Puppet::FileSystem.send(method, self[:path])
     rescue Errno::ENOENT => error
       nil
     rescue Errno::ENOTDIR => error
@@ -704,41 +839,48 @@ Puppet::Type.newtype(:file) do
     resource
   end
 
-  # Write out the file.  Requires the property name for logging.
-  # Write will be done by the content property, along with checksum computation
-  def write(property)
+  # Write out the file. To write content, pass the property as an argument
+  # to delegate writing to; must implement a #write method that takes the file
+  # as an argument.
+  def write(property = nil)
     remove_existing(:file)
 
-    use_temporary_file = write_temporary_file?
-    if use_temporary_file
-      path = "#{self[:path]}.puppettmp_#{rand(10000)}"
-      path = "#{self[:path]}.puppettmp_#{rand(10000)}" while ::File.exists?(path) or ::File.symlink?(path)
-    else
-      path = self[:path]
-    end
-
     mode = self.should(:mode) # might be nil
-    umask = mode ? 000 : 022
-    mode_int = mode ? symbolic_mode_to_int(mode, 0644) : nil
+    mode_int = mode ? symbolic_mode_to_int(mode, Puppet::Util::DEFAULT_POSIX_MODE) : nil
 
-    content_checksum = Puppet::Util.withumask(umask) { ::File.open(path, 'wb', mode_int ) { |f| write_content(f) } }
+    if write_temporary_file?
+      Puppet::Util.replace_file(self[:path], mode_int) do |file|
+        file.binmode
+        devfail 'a property should have been provided if write_temporary_file? returned true' if property.nil?
+        content_checksum = property.write(file)
+        file.flush
+        begin
+          file.fsync
+        rescue NotImplementedError
+          # fsync may not be implemented by Ruby on all platforms, but
+          # there is absolutely no recovery path if we detect that.  So, we just
+          # ignore the return code.
+          #
+          # However, don't be fooled: that is accepting that we are running in
+          # an unsafe fashion.  If you are porting to a new platform don't stub
+          # that out.
+        end
 
-    # And put our new file in place
-    if use_temporary_file # This is only not true when our file is empty.
-      begin
-        fail_if_checksum_is_wrong(path, content_checksum) if validate_checksum?
-        ::File.rename(path, self[:path])
-      rescue => detail
-        fail "Could not rename temporary file #{path} to #{self[:path]}: #{detail}"
-      ensure
-        # Make sure the created file gets removed
-        ::File.unlink(path) if FileTest.exists?(path)
+        fail_if_checksum_is_wrong(file.path, content_checksum) if validate_checksum?
+        if self[:validate_cmd]
+          output = Puppet::Util::Execution.execute(self[:validate_cmd].gsub(self[:validate_replacement], file.path), :failonfail => true, :combine => true)
+          output.split(/\n/).each { |line|
+            self.debug(line)
+          }
+        end
       end
+    else
+      umask = mode ? 000 : 022
+      Puppet::Util.withumask(umask) { ::File.open(self[:path], 'wb', mode_int ) { |f| property.write(f) if property } }
     end
 
     # make sure all of the modes are actually correct
     property_fix
-
   end
 
   private
@@ -782,7 +924,7 @@ Puppet::Type.newtype(:file) do
   # @api private
   def remove_file(current_type, wanted_type)
     debug "Removing existing #{current_type} for replacement with #{wanted_type}"
-    ::File.unlink(self[:path])
+    Puppet::FileSystem.unlink(self[:path])
     stat_needed
     true
   end
@@ -814,16 +956,9 @@ Puppet::Type.newtype(:file) do
     self.fail "File written to disk did not match checksum; discarding changes (#{content_checksum} vs #{newsum})"
   end
 
-  # write the current content. Note that if there is no content property
-  # simply opening the file with 'w' as done in write is enough to truncate
-  # or write an empty length file.
-  def write_content(file)
-    (content = property(:content)) && content.write(file)
-  end
-
   def write_temporary_file?
-    # unfortunately we don't know the source file size before fetching it
-    # so let's assume the file won't be empty
+    # Unfortunately we don't know the source file size before fetching it so
+    # let's assume the file won't be empty. Why isn't it part of the metadata?
     (c = property(:content) and c.length) || @parameters[:source]
   end
 
@@ -839,6 +974,7 @@ Puppet::Type.newtype(:file) do
       thing.sync unless thing.safe_insync?(currentvalue)
     end
   end
+
 end
 
 # We put all of the properties in separate files, because there are so many
@@ -847,6 +983,7 @@ end
 require 'puppet/type/file/checksum'
 require 'puppet/type/file/content'     # can create the file
 require 'puppet/type/file/source'      # can create the file
+require 'puppet/type/file/checksum_value' # can create the file, in place of content
 require 'puppet/type/file/target'      # creates a different type of file
 require 'puppet/type/file/ensure'      # can create the file
 require 'puppet/type/file/owner'

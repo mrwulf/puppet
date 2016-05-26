@@ -26,7 +26,7 @@ Puppet::Type.type(:user).provide :user_role_add, :parent => :useradd, :source =>
     value !~ /\s/
   end
 
-  has_features :manages_homedir, :allows_duplicates, :manages_solaris_rbac, :manages_passwords, :manages_password_age
+  has_features :manages_homedir, :allows_duplicates, :manages_solaris_rbac, :manages_passwords, :manages_password_age, :manages_shell
 
   #must override this to hand the keyvalue pairs
   def add_properties
@@ -68,7 +68,7 @@ Puppet::Type.type(:user).provide :user_role_add, :parent => :useradd, :source =>
   def run(cmd, msg)
       execute(cmd)
   rescue Puppet::ExecutionFailure => detail
-      raise Puppet::Error, "Could not #{msg} #{@resource.class.name} #{@resource.name}: #{detail}"
+      raise Puppet::Error, "Could not #{msg} #{@resource.class.name} #{@resource.name}: #{detail}", detail.backtrace
   end
 
   def transition(type)
@@ -161,21 +161,24 @@ Puppet::Type.type(:user).provide :user_role_add, :parent => :useradd, :source =>
     return @shadow_entry if defined? @shadow_entry
     @shadow_entry = File.readlines(target_file_path).
       reject { |r| r =~ /^[^\w]/ }.
-      collect { |l| l.chomp.split(':') }.
+      # PUP-229 dont suppress the empty fields
+      collect { |l| l.chomp.split(':', -1) }.
       find { |user, _| user == @resource[:name] }
   end
 
   def password
-    shadow_entry[1] if shadow_entry
+    return :absent unless shadow_entry
+    shadow_entry[1]
   end
 
   def password_min_age
-    shadow_entry ? shadow_entry[3] : :absent
+    return :absent unless shadow_entry
+    shadow_entry[3].empty? ? -1 : shadow_entry[3]
   end
 
   def password_max_age
     return :absent unless shadow_entry
-    shadow_entry[4] || -1
+    shadow_entry[4].empty? ? -1 : shadow_entry[4]
   end
 
   # Read in /etc/shadow, find the line for our used and rewrite it with the
@@ -203,7 +206,7 @@ Puppet::Type.type(:user).provide :user_role_add, :parent => :useradd, :source =>
         end
       end
     rescue => detail
-      fail "Could not write replace #{target_file_path}: #{detail}"
+      self.fail Puppet::Error, "Could not write replace #{target_file_path}: #{detail}", detail
     end
   end
 end

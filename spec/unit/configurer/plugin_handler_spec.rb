@@ -3,35 +3,66 @@ require 'spec_helper'
 require 'puppet/configurer'
 require 'puppet/configurer/plugin_handler'
 
-class PluginHandlerTester
-  include Puppet::Configurer::PluginHandler
-  attr_accessor :environment
-end
-
 describe Puppet::Configurer::PluginHandler do
-  before do
-    @pluginhandler = PluginHandlerTester.new
+  let(:factory)       { Puppet::Configurer::DownloaderFactory.new }
+  let(:pluginhandler) { Puppet::Configurer::PluginHandler.new(factory) }
+  let(:environment)   { Puppet::Node::Environment.create(:myenv, []) }
 
+  before :each do
     # PluginHandler#load_plugin has an extra-strong rescue clause
     # this mock is to make sure that we don't silently ignore errors
     Puppet.expects(:err).never
   end
 
-  it "should use an Agent Downloader, with the name, source, destination, ignore, and environment set correctly, to download plugins when downloading is enabled" do
-    downloader = mock 'downloader'
+  context "when external facts are supported" do
+    before :each do
+      Puppet.features.stubs(:external_facts?).returns(true)
+    end
 
-    # This is needed in order to make sure we pass on windows
-    plugindest = File.expand_path("/tmp/pdest")
+    it "downloads plugins and facts" do
+      plugin_downloader = stub('plugin-downloader', :evaluate => [])
+      facts_downloader = stub('facts-downloader', :evaluate => [])
 
-    Puppet[:pluginsource] = "psource"
-    Puppet[:plugindest] = plugindest
-    Puppet[:pluginsignore] = "pignore"
+      factory.expects(:create_plugin_downloader).returns(plugin_downloader)
+      factory.expects(:create_plugin_facts_downloader).returns(facts_downloader)
 
-    Puppet::Configurer::Downloader.expects(:new).with("plugin", plugindest, "psource", "pignore", "myenv").returns downloader
+      pluginhandler.download_plugins(environment)
+    end
 
-    downloader.expects(:evaluate).returns []
+    it "returns downloaded plugin and fact filenames" do
+      plugin_downloader = stub('plugin-downloader', :evaluate => %w[/a])
+      facts_downloader = stub('facts-downloader', :evaluate => %w[/b])
 
-    @pluginhandler.environment = "myenv"
-    @pluginhandler.download_plugins
+      factory.expects(:create_plugin_downloader).returns(plugin_downloader)
+      factory.expects(:create_plugin_facts_downloader).returns(facts_downloader)
+
+      expect(pluginhandler.download_plugins(environment)).to match_array(%w[/a /b])
+    end
+  end
+
+  context "when external facts are not supported" do
+    before :each do
+      Puppet.features.stubs(:external_facts?).returns(false)
+    end
+
+    it "downloads plugins only" do
+      plugin_downloader = stub('plugin-downloader', :evaluate => [])
+
+      factory.expects(:create_plugin_downloader).returns(plugin_downloader)
+      factory.expects(:create_plugin_facts_downloader).never
+
+      pluginhandler.download_plugins(environment)
+    end
+
+    it "returns downloaded plugin filenames only" do
+      Puppet.features.stubs(:external_facts?).returns(false)
+
+      plugin_downloader = stub('plugin-downloader', :evaluate => %w[/a])
+      facts_downloader = stub('facts-downloader')
+
+      factory.expects(:create_plugin_downloader).returns(plugin_downloader)
+
+      expect(pluginhandler.download_plugins(environment)).to match_array(%w[/a])
+    end
   end
 end

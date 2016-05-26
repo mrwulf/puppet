@@ -1,7 +1,7 @@
 # Provides a label for an object.
 # This simple implementation calls #to_s on the given object, and handles articles 'a/an/the'.
 #
-class Puppet::Pops::LabelProvider
+module Puppet::Pops::LabelProvider
   VOWELS = %w{a e i o u y}
   SKIPPED_CHARACTERS = %w{" '}
   A = "a"
@@ -33,6 +33,11 @@ class Puppet::Pops::LabelProvider
   # Produces a label for the given text with *definitie article* (The).
   def the_uc o
     "The #{label(o)}"
+  end
+
+  # Appends 's' to (optional) text if count != 1 else an empty string
+  def plural_s(count, text = '')
+    count == 1 ? text : "#{text}s"
   end
 
   private

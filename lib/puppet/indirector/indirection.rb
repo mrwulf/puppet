@@ -3,7 +3,6 @@ require 'puppet/util/profiler'
 require 'puppet/util/methodhelper'
 require 'puppet/indirector/envelope'
 require 'puppet/indirector/request'
-require 'puppet/util/instrumentation/instrumentable'
 
 # The class that connects functional classes with their different collection
 # back-ends.  Each indirection has a set of associated terminus classes,
@@ -11,15 +10,9 @@ require 'puppet/util/instrumentation/instrumentable'
 class Puppet::Indirector::Indirection
   include Puppet::Util::MethodHelper
   include Puppet::Util::Docs
-  extend Puppet::Util::Instrumentation::Instrumentable
 
   attr_accessor :name, :model
   attr_reader :termini
-
-  probe :find, :label => Proc.new { |parent, key, *args| "find_#{parent.name}_#{parent.terminus_class}" }, :data => Proc.new { |parent, key, *args| { :key => key }}
-  probe :save, :label => Proc.new { |parent, key, *args| "save_#{parent.name}_#{parent.terminus_class}" }, :data => Proc.new { |parent, key, *args| { :key => key }}
-  probe :search, :label => Proc.new { |parent, key, *args| "search_#{parent.name}_#{parent.terminus_class}" }, :data => Proc.new { |parent, key, *args| { :key => key }}
-  probe :destroy, :label => Proc.new { |parent, key, *args| "destroy_#{parent.name}_#{parent.terminus_class}" }, :data => Proc.new { |parent, key, *args| { :key => key }}
 
   @@indirections = []
 
@@ -180,6 +173,10 @@ class Puppet::Indirector::Indirection
     cache.save(request(:save, nil, instance, options))
   end
 
+  def allow_remote_requests?
+    terminus.allow_remote_requests?
+  end
+
   # Search for an instance in the appropriate terminus, caching the
   # results if caching is configured..
   def find(key, options={})
@@ -197,18 +194,27 @@ class Puppet::Indirector::Indirection
       result = terminus.find(request)
       if not result.nil?
         result.expiration ||= self.expiration if result.respond_to?(:expiration)
-        if cache? and request.use_cache?
+        if cache?
           Puppet.info "Caching #{self.name} for #{request.key}"
-          cache.save request(:save, key, result, options)
+          begin
+            cache.save request(:save, key, result, options)
+          rescue => detail
+            Puppet.log_exception(detail)
+            raise detail
+          end
         end
 
         filtered = result
         if terminus.respond_to?(:filter)
-          Puppet::Util::Profiler.profile("Filtered result for #{self.name} #{request.key}") do
-            filtered = terminus.filter(result)
+          Puppet::Util::Profiler.profile("Filtered result for #{self.name} #{request.key}", [:indirector, :filter, self.name, request.key]) do
+            begin
+              filtered = terminus.filter(result)
+            rescue Puppet::Error => detail
+              Puppet.log_exception(detail)
+              raise detail
+            end
           end
         end
-
         filtered
       end
     end
@@ -297,7 +303,7 @@ class Puppet::Indirector::Indirection
     return unless terminus.respond_to?(:authorized?)
 
     unless terminus.authorized?(request)
-      msg = "Not authorized to call #{request.method} on #{request}"
+      msg = "Not authorized to call #{request.method} on #{request.description}"
       msg += " with #{request.options.inspect}" unless request.options.empty?
       raise ArgumentError, msg
     end
@@ -308,7 +314,7 @@ class Puppet::Indirector::Indirection
     # Pick our terminus.
     if respond_to?(:select_terminus)
       unless terminus_name = select_terminus(request)
-        raise ArgumentError, "Could not determine appropriate terminus for #{request}"
+        raise ArgumentError, "Could not determine appropriate terminus for #{request.description}"
       end
     else
       terminus_name = terminus_class

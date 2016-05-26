@@ -21,13 +21,20 @@ module Puppet::Network
   end
 
   module Authorization
+    @@authconfigloader_class = nil
+
+    def self.authconfigloader_class=(klass)
+      @@authconfigloader_class = klass
+    end
+
     def authconfig
-      AuthConfigLoader.authconfig
+      authconfigloader = @@authconfigloader_class || AuthConfigLoader
+      authconfigloader.authconfig
     end
 
     # Verify that our client has access.
-    def check_authorization(indirection, method, key, params)
-      authconfig.check_authorization(indirection, method, key, params)
+    def check_authorization(method, path, params)
+      authconfig.check_authorization(method, path, params)
     end
   end
 end

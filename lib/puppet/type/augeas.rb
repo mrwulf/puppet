@@ -5,13 +5,15 @@
 #   you may not use this file except in compliance with the License.
 #   You may obtain a copy of the License at
 #
-#       http://www.apache.org/licenses/LICENSE-2.0
+#       https://www.apache.org/licenses/LICENSE-2.0
 #
 #   Unless required by applicable law or agreed to in writing, software
 #   distributed under the License is distributed on an "AS IS" BASIS,
 #   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
+
+require 'puppet/parameter/boolean'
 
 Puppet::Type.newtype(:augeas) do
   include Puppet::Util
@@ -71,9 +73,17 @@ Puppet::Type.newtype(:augeas) do
 
   newparam (:onlyif) do
     desc "Optional augeas command and comparisons to control the execution of this type.
+
+      Note: `values` is not an actual augeas API command. It calls `match` to retrieve an array of paths
+             in <MATCH_PATH> and then `get` to retrieve the values from each of the returned paths.
+
       Supported onlyif syntax:
 
       * `get <AUGEAS_PATH> <COMPARATOR> <STRING>`
+      * `values <MATCH_PATH> include <STRING>`
+      * `values <MATCH_PATH> not_include <STRING>`
+      * `values <MATCH_PATH> == <AN_ARRAY>`
+      * `values <MATCH_PATH> != <AN_ARRAY>`
       * `match <MATCH_PATH> size <COMPARATOR> <INT>`
       * `match <MATCH_PATH> include <STRING>`
       * `match <MATCH_PATH> not_include <STRING>`
@@ -83,7 +93,7 @@ Puppet::Type.newtype(:augeas) do
       where:
 
       * `AUGEAS_PATH` is a valid path scoped by the context
-      * `MATCH_PATH` is a valid match synatx scoped by the context
+      * `MATCH_PATH` is a valid match syntax scoped by the context
       * `COMPARATOR` is one of `>, >=, !=, ==, <=,` or `<`
       * `STRING` is a string
       * `INT` is a number
@@ -96,52 +106,20 @@ Puppet::Type.newtype(:augeas) do
     desc "The changes which should be applied to the filesystem. This
     can be a command or an array of commands. The following commands are supported:
 
-    `set <PATH> <VALUE>`
-    : Sets the value `VALUE` at loction `PATH`
-
-
-    `setm <PATH> <SUB> <VALUE>`
-    : Sets multiple nodes (matching `SUB` relative to `PATH`) to `VALUE`
-
-
-    `rm <PATH>`
-    : Removes the node at location `PATH`
-
-
-    `remove <PATH>`
-    : Synonym for `rm`
-
-
-    `clear <PATH>`
-    : Sets the node at `PATH` to `NULL`, creating it if needed
-
-
-    `clearm <PATH> <SUB>`
-    : Sets multiple nodes (matching `SUB` relative to `PATH`) to `NULL`
-
-
-    `ins <LABEL> (before|after) <PATH>`
-    : Inserts an empty node `LABEL` either before or after `PATH`.
-
-
-    `insert <LABEL> <WHERE> <PATH>`
-    : Synonym for `ins`
-
-
-    `mv <PATH> <OTHER PATH>`
-    : Moves a node at `PATH` to the new location `OTHER PATH`
-
-
-    `move <PATH> <OTHER PATH>`
-    : Synonym for `mv`
-
-
-    `defvar <NAME> <PATH>`
-    : Sets Augeas variable `$NAME` to `PATH`
-
-
-    `defnode <NAME> <PATH> <VALUE>`
-    : Sets Augeas variable `$NAME` to `PATH`, creating it with `VALUE` if needed
+    * `set <PATH> <VALUE>` --- Sets the value `VALUE` at loction `PATH`
+    * `setm <PATH> <SUB> <VALUE>` --- Sets multiple nodes (matching `SUB` relative to `PATH`) to `VALUE`
+    * `rm <PATH>` --- Removes the node at location `PATH`
+    * `remove <PATH>` --- Synonym for `rm`
+    * `clear <PATH>` --- Sets the node at `PATH` to `NULL`, creating it if needed
+    * `clearm <PATH> <SUB>` --- Sets multiple nodes (matching `SUB` relative to `PATH`) to `NULL`
+    * `touch <PATH>` --- Creates `PATH` with the value `NULL` if it does not exist
+    * `ins <LABEL> (before|after) <PATH>` --- Inserts an empty node `LABEL` either before or after `PATH`.
+    * `insert <LABEL> <WHERE> <PATH>` --- Synonym for `ins`
+    * `mv <PATH> <OTHER PATH>` --- Moves a node at `PATH` to the new location `OTHER PATH`
+    * `move <PATH> <OTHER PATH>` --- Synonym for `mv`
+    * `rename <PATH> <LABEL>` --- Rename a node at `PATH` to a new `LABEL`
+    * `defvar <NAME> <PATH>` --- Sets Augeas variable `$NAME` to `PATH`
+    * `defnode <NAME> <PATH> <VALUE>` --- Sets Augeas variable `$NAME` to `PATH`, creating it with `VALUE` if needed
 
     If the `context` parameter is set, that value is prepended to any relative `PATH`s."
   end
@@ -173,7 +151,8 @@ Puppet::Type.newtype(:augeas) do
 
   newparam(:lens) do
     desc "Use a specific lens, e.g. `Hosts.lns`. When this parameter is set, you
-      must also set the `incl` parameter to indicate which file to load."
+      must also set the `incl` parameter to indicate which file to load.
+      The Augeas documentation includes [a list of available lenses](http://augeas.net/stock_lenses.html)."
   end
 
   newparam(:incl) do
@@ -186,6 +165,16 @@ Puppet::Type.newtype(:augeas) do
     has_lens = !self[:lens].nil?
     has_incl = !self[:incl].nil?
     self.fail "You must specify both the lens and incl parameters, or neither." if has_lens != has_incl
+  end
+
+  newparam(:show_diff, :boolean => true, :parent => Puppet::Parameter::Boolean) do
+    desc "Whether to display differences when the file changes, defaulting to
+        true.  This parameter is useful for files that may contain passwords or
+        other secret data, which might otherwise be included in Puppet reports or
+        other insecure outputs.  If the global `show_diff` setting
+        is false, then no diffs will be shown even if this parameter is true."
+
+    defaultto :true
   end
 
   # This is the actual meat of the code. It forces

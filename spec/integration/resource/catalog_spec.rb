@@ -3,7 +3,7 @@ require 'spec_helper'
 
 describe Puppet::Resource::Catalog do
   it "should support pson" do
-    Puppet::Resource::Catalog.supported_formats.should be_include(:pson)
+    expect(Puppet::Resource::Catalog.supported_formats).to be_include(:pson)
   end
 
   describe "when using the indirector" do
@@ -21,8 +21,8 @@ describe Puppet::Resource::Catalog do
       terminus = Puppet::Resource::Catalog.indirection.terminus(:yaml)
       terminus.expects(:path).with("me").returns "/my/yaml/file"
 
-      FileTest.expects(:exist?).with("/my/yaml/file").returns false
-      Puppet::Resource::Catalog.indirection.find("me").should be_nil
+      Puppet::FileSystem.expects(:exist?).with("/my/yaml/file").returns false
+      expect(Puppet::Resource::Catalog.indirection.find("me")).to be_nil
     end
 
     it "should be able to delegate to the :compiler terminus" do
@@ -35,9 +35,9 @@ describe Puppet::Resource::Catalog do
       node.stub_everything
 
       Puppet::Node.indirection.expects(:find).returns(node)
-      compiler.expects(:compile).with(node).returns nil
+      compiler.expects(:compile).with(node, anything).returns nil
 
-      Puppet::Resource::Catalog.indirection.find("me").should be_nil
+      expect(Puppet::Resource::Catalog.indirection.find("me")).to be_nil
     end
 
     it "should pass provided node information directly to the terminus" do

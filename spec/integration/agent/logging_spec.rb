@@ -94,13 +94,13 @@ describe 'agent logging' do
         #
         # It's not something we are specifically testing here since it occurs
         # regardless of user flags.
-        Puppet::Util::Log.expects(:newdestination).with(instance_of(Puppet::Transaction::Report)).once
+        Puppet::Util::Log.expects(:newdestination).with(instance_of(Puppet::Transaction::Report)).at_least_once
         expected[:loggers].each do |logclass|
           Puppet::Util::Log.expects(:newdestination).with(logclass).at_least_once
         end
         double_of_bin_puppet_agent_call(argv)
 
-        Puppet::Util::Log.level.should == expected[:level]
+        expect(Puppet::Util::Log.level).to eq(expected[:level])
       end
 
     end

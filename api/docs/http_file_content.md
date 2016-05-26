@@ -8,10 +8,10 @@ Find
 
 Get a file.
 
-    GET /:environment/file_content/:mount_point/:name
+    GET /puppet/v3/file_content/:mount_point/:name
 
 `:mount_point` is one of mounts configured in the `fileserver.conf`.
-See [the puppet file server guide](http://docs.puppetlabs.com/guides/file_serving.html)
+See [the puppet file server guide](https://docs.puppetlabs.com/guides/file_serving.html)
 for more information about how mount points work.
 
 `:name` is the path to the file within the `:mount_point` that is requested.
@@ -20,9 +20,9 @@ for more information about how mount points work.
 
 GET
 
-### Supported Format
+### Supported Response Formats
 
-Accept: raw
+binary (the raw binary content)
 
 ### Parameters
 
@@ -34,11 +34,11 @@ None
 
 #### File found
 
-    GET /env/file_content/modules/example/my_file
-    Accept: raw
+    GET /puppet/v3/file_content/modules/example/my_file?environment=env
+    Accept: binary
 
     HTTP/1.1 200 OK
-    Content-Type: application/x-raw
+    Content-Type: application/octet-stream
     Content-Length: 16
 
     this is my file
@@ -46,21 +46,25 @@ None
 
 #### File not found
 
-    GET /env/file_content/modules/example/not_found
-    Accept: raw
+    GET /puppet/v3/file_content/modules/example/not_found?environment=env
+    Accept: binary
 
-    HTTP/1.1 404 Not Found: Could not find file_content modules/example/not_found
+    HTTP/1.1 404 Not Found
     Content-Type: text/plain
+
+    Not Found: Could not find file_content modules/example/not_found
 
 #### No file name given
 
-    GET /env/file_content/
+    GET /puppet/v3/file_content?environment=env
 
-    HTTP/1.1 400 No request key specified in /env/file_content/
+    HTTP/1.1 400 Bad Request
     Content-Type: text/plain
+
+    No request key specified in /puppet/v3/file_content/
 
 Schema
 ------
 
-A file_content response body is not structured data according to any standard scheme such as
+A `file_content` response body is not structured data according to any standard scheme such as
 json/pson/yaml, so no schema is applicable.

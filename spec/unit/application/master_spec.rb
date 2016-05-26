@@ -22,19 +22,19 @@ describe Puppet::Application::Master, :unless => Puppet.features.microsoft_windo
   end
 
   it "should operate in master run_mode" do
-    @master.class.run_mode.name.should equal(:master)
+    expect(@master.class.run_mode.name).to equal(:master)
   end
 
   it "should declare a main command" do
-    @master.should respond_to(:main)
+    expect(@master).to respond_to(:main)
   end
 
   it "should declare a compile command" do
-    @master.should respond_to(:compile)
+    expect(@master).to respond_to(:compile)
   end
 
   it "should declare a preinit block" do
-    @master.should respond_to(:preinit)
+    expect(@master).to respond_to(:preinit)
   end
 
   describe "during preinit" do
@@ -51,7 +51,7 @@ describe Puppet::Application::Master, :unless => Puppet.features.microsoft_windo
 
   [:debug,:verbose].each do |option|
     it "should declare handle_#{option} method" do
-      @master.should respond_to("handle_#{option}".to_sym)
+      expect(@master).to respond_to("handle_#{option}".to_sym)
     end
 
     it "should store argument value when calling handle_#{option}" do
@@ -91,7 +91,7 @@ describe Puppet::Application::Master, :unless => Puppet.features.microsoft_windo
       @master.preinit
       @master.parse_options
 
-      Puppet[:dns_alt_names].should == "foo,bar,baz"
+      expect(Puppet[:dns_alt_names]).to eq("foo,bar,baz")
     end
 
 
@@ -114,38 +114,46 @@ describe Puppet::Application::Master, :unless => Puppet.features.microsoft_windo
       expect { @master.setup }.to raise_error(Puppet::Error, /Puppet master is not supported on Microsoft Windows/)
     end
 
-    it "should set log level to debug if --debug was passed" do
-      @master.options.stubs(:[]).with(:debug).returns(true)
-      @master.setup
-      Puppet::Log.level.should == :debug
-    end
+    describe "setting up logging" do
+      it "sets the log level" do
+        @master.expects(:set_log_level)
+        @master.setup
+      end
 
-    it "should set log level to info if --verbose was passed" do
-      @master.options.stubs(:[]).with(:verbose).returns(true)
-      @master.setup
-      Puppet::Log.level.should == :info
-    end
+      describe "when the log destination is not explicitly configured" do
+        before do
+          @master.options.stubs(:[]).with(:setdest).returns false
+        end
 
-    it "should set console as the log destination if no --logdest and --daemonize" do
-      @master.stubs(:[]).with(:daemonize).returns(:false)
+        it "logs to the console when --compile is given" do
+          @master.options.stubs(:[]).with(:node).returns "default"
+          Puppet::Util::Log.expects(:newdestination).with(:console)
+          @master.setup
+        end
 
-      Puppet::Log.expects(:newdestination).with(:syslog)
+        it "logs to the console when the master is not daemonized or run with rack" do
+          Puppet::Util::Log.expects(:newdestination).with(:console)
+          Puppet[:daemonize] = false
+          @master.options.stubs(:[]).with(:rack).returns(false)
+          @master.setup
+        end
 
-      @master.setup
-    end
+        it "logs to syslog when the master is daemonized" do
+          Puppet::Util::Log.expects(:newdestination).with(:console).never
+          Puppet::Util::Log.expects(:newdestination).with(:syslog)
+          Puppet[:daemonize] = true
+          @master.options.stubs(:[]).with(:rack).returns(false)
+          @master.setup
+        end
 
-    it "should set syslog as the log destination if no --logdest and not --daemonize" do
-      Puppet::Log.expects(:newdestination).with(:syslog)
-
-      @master.setup
-    end
-
-    it "should set syslog as the log destination if --rack" do
-      @master.options.stubs(:[]).with(:rack).returns(:true)
-
-      Puppet::Log.expects(:newdestination).with(:syslog)
-
-      @master.setup
+        it "logs to syslog when the master is run with rack" do
+          Puppet::Util::Log.expects(:newdestination).with(:console).never
+          Puppet::Util::Log.expects(:newdestination).with(:syslog)
+          Puppet[:daemonize] = false
+          @master.options.stubs(:[]).with(:rack).returns(true)
+          @master.setup
+        end
+      end
     end
 
     it "should print puppet config if asked to in Puppet config" do
@@ -252,14 +260,14 @@ describe Puppet::Application::Master, :unless => Puppet.features.microsoft_windo
       it "should exit with error code 30 if no catalog can be found" do
         @master.options[:node] = "foo"
         Puppet::Resource::Catalog.indirection.expects(:find).returns nil
-        $stderr.expects(:puts)
+        Puppet.expects(:log_exception)
         expect { @master.compile }.to exit_with 30
       end
 
       it "should exit with error code 30 if there's a failure" do
         @master.options[:node] = "foo"
         Puppet::Resource::Catalog.indirection.expects(:find).raises ArgumentError
-        $stderr.expects(:puts)
+        Puppet.expects(:log_exception)
         expect { @master.compile }.to exit_with 30
       end
     end
@@ -277,6 +285,7 @@ describe Puppet::Application::Master, :unless => Puppet.features.microsoft_windo
         Puppet[:daemonize] = false
         Puppet.stubs(:notice)
         Puppet.stubs(:start)
+        Puppet::Util.stubs(:chuser)
       end
 
       it "should create a Server" do
@@ -305,10 +314,32 @@ describe Puppet::Application::Master, :unless => Puppet.features.microsoft_windo
         @master.main
       end
 
-      it "should drop privileges if running as root" do
-        Puppet.features.stubs(:root?).returns true
+      def a_user_type_for(username)
+        user = mock 'user'
+        Puppet::Type.type(:user).expects(:new).with { |args| args[:name] == username }.returns user
+        user
+      end
 
-        Puppet::Util.expects(:chuser)
+      context "user privileges" do
+        it "should drop privileges if running as root and the puppet user exists" do
+          Puppet.features.stubs(:root?).returns true
+          a_user_type_for("puppet").expects(:exists?).returns true
+
+          Puppet::Util.expects(:chuser)
+
+          @master.main
+        end
+
+        it "should exit and log an error if running as root and the puppet user does not exist" do
+          Puppet.features.stubs(:root?).returns true
+          a_user_type_for("puppet").expects(:exists?).returns false
+          Puppet.expects(:err).with('Could not change user to puppet. User does not exist and is required to continue.')
+          expect { @master.main }.to exit_with 74
+        end
+      end
+
+      it "should log a deprecation notice when running a WEBrick server" do
+        Puppet.expects(:deprecation_warning).with("The WEBrick Puppet master server is deprecated and will be removed in a future release. Please use Puppet Server instead. See http://links.puppetlabs.com/deprecate-rack-webrick-servers for more information.")
 
         @master.main
       end
@@ -331,25 +362,27 @@ describe Puppet::Application::Master, :unless => Puppet.features.microsoft_windo
         before do
           require 'puppet/network/http/rack'
           Puppet::Network::HTTP::Rack.stubs(:new).returns(@app)
+
+          @master.options.stubs(:[]).with(:rack).returns(:true)
         end
 
         it "it should not start a daemon" do
-          @master.options.stubs(:[]).with(:rack).returns(:true)
-
           @daemon.expects(:start).never
 
           @master.main
         end
 
         it "it should return the app" do
-          @master.options.stubs(:[]).with(:rack).returns(:true)
-
           app = @master.main
-          app.should equal(@app)
+          expect(app).to equal(@app)
         end
 
-      end
+        it "should log a deprecation notice" do
+          Puppet.expects(:deprecation_warning).with("The Rack Puppet master server is deprecated and will be removed in a future release. Please use Puppet Server instead. See http://links.puppetlabs.com/deprecate-rack-webrick-servers for more information.")
 
+          @master.main
+        end
+      end
     end
   end
 end

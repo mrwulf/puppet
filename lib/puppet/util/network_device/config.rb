@@ -15,7 +15,7 @@ class Puppet::Util::NetworkDevice::Config
   attr_reader :devices
 
   def exists?
-    FileTest.exists?(@file)
+    Puppet::FileSystem.exist?(@file.to_str)
   end
 
   def initialize
@@ -82,6 +82,11 @@ class Puppet::Util::NetworkDevice::Config
     when "type"
       device.provider = value
     when "url"
+      begin
+        URI.parse(value)
+      rescue URI::InvalidURIError
+        raise Puppet::Error, "#{value} is an invalid url"
+      end
       device.url = value
     when "debug"
       device.options[:debug] = true

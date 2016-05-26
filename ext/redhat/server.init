@@ -13,7 +13,7 @@ PATH=/usr/bin:/sbin:/bin:/usr/sbin
 export PATH
 
 lockfile=/var/lock/subsys/puppetmaster
-pidfile=/var/run/puppet/master.pid
+pidfile=/var/run/puppetlabs/master.pid
 
 # Source function library.
 . /etc/rc.d/init.d/functions
@@ -89,7 +89,7 @@ genconfig() {
 }
 
 rh_status() {
-    status $pidopts $PUPPETMASTER
+    status $pidopts -l $lockfile $PUPPETMASTER
     RETVAL=$?
     return $RETVAL
 }

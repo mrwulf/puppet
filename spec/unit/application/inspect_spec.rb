@@ -3,7 +3,7 @@ require 'spec_helper'
 
 require 'puppet/application/inspect'
 require 'puppet/resource/catalog'
-require 'puppet/indirector/catalog/yaml'
+require 'puppet/indirector/catalog/json'
 require 'puppet/indirector/report/rest'
 require 'puppet/indirector/file_bucket_file/rest'
 
@@ -16,7 +16,7 @@ describe Puppet::Application::Inspect do
   end
 
   it "should operate in agent run_mode" do
-    @inspect.class.run_mode.name.should == :agent
+    expect(@inspect.class.run_mode.name).to eq(:agent)
   end
 
   describe "during setup" do
@@ -29,11 +29,22 @@ describe Puppet::Application::Inspect do
 
     it "should fail if reporting is turned off" do
       Puppet[:report] = false
-      lambda { @inspect.setup }.should raise_error(/report=true/)
+      expect { @inspect.setup }.to raise_error(/report=true/)
+    end
+
+    it "should default to the json terminus class when catalog_cache_terminus is not set" do
+      Puppet::Resource::Catalog.indirection.expects(:terminus_class=).with(:json)
+      expect { @inspect.setup }.not_to raise_error
+    end
+
+    it "should respect the catalog_cache_terminus if set" do
+      Puppet[:catalog_cache_terminus] = :yaml
+      Puppet::Resource::Catalog.indirection.expects(:terminus_class=).with(:yaml)
+      expect { @inspect.setup }.not_to raise_error
     end
   end
 
-  describe "when executing" do
+  describe "when executing", :uses_checksums => true do
     before :each do
       Puppet[:report] = true
       @inspect.options[:setdest] = true
@@ -42,42 +53,44 @@ describe Puppet::Application::Inspect do
     end
 
     it "should retrieve the local catalog" do
-      Puppet::Resource::Catalog::Yaml.any_instance.expects(:find).with {|request| request.key == Puppet[:certname] }.returns(Puppet::Resource::Catalog.new)
+      Puppet::Resource::Catalog::Json.any_instance.expects(:find).with {|request| request.key == Puppet[:certname] }.returns(Puppet::Resource::Catalog.new)
 
       @inspect.run_command
     end
 
     it "should save the report to REST" do
-      Puppet::Resource::Catalog::Yaml.any_instance.stubs(:find).returns(Puppet::Resource::Catalog.new)
+      Puppet::Resource::Catalog::Json.any_instance.stubs(:find).returns(Puppet::Resource::Catalog.new)
       Puppet::Transaction::Report::Rest.any_instance.expects(:save).with {|request| request.instance.host == Puppet[:certname] }
 
       @inspect.run_command
     end
 
-    it "should audit the specified properties" do
-      catalog = Puppet::Resource::Catalog.new
-      file = Tempfile.new("foo")
-      file.binmode
-      file.puts("file contents")
-      file.close
-      resource = Puppet::Resource.new(:file, file.path, :parameters => {:audit => "all"})
-      catalog.add_resource(resource)
-      Puppet::Resource::Catalog::Yaml.any_instance.stubs(:find).returns(catalog)
+    with_digest_algorithms do
+      it "should audit the specified properties" do
+        catalog = Puppet::Resource::Catalog.new
+        file = Tempfile.new("foo")
+        file.binmode
+        file.print plaintext
+        file.close
+        resource = Puppet::Resource.new(:file, file.path, :parameters => {:audit => "all"})
+        catalog.add_resource(resource)
+        Puppet::Resource::Catalog::Json.any_instance.stubs(:find).returns(catalog)
 
-      events = nil
+        events = nil
 
-      Puppet::Transaction::Report::Rest.any_instance.expects(:save).with do |request|
-        events = request.instance.resource_statuses.values.first.events
+        Puppet::Transaction::Report::Rest.any_instance.expects(:save).with do |request|
+          events = request.instance.resource_statuses.values.first.events
+        end
+
+        @inspect.run_command
+
+        properties = events.inject({}) do |property_values, event|
+          property_values.merge(event.property => event.previous_value)
+        end
+        expect(properties["ensure"]).to eq(:file)
+        expect(properties["content"]).to eq("{#{digest_algorithm}}#{checksum}")
+        expect(properties.has_key?("target")).to eq(false)
       end
-
-      @inspect.run_command
-
-      properties = events.inject({}) do |property_values, event|
-        property_values.merge(event.property => event.previous_value)
-      end
-      properties["ensure"].should == :file
-      properties["content"].should == "{md5}#{Digest::MD5.hexdigest("file contents\n")}"
-      properties.has_key?("target").should == false
     end
 
     it "should set audited to true for all events" do
@@ -85,7 +98,7 @@ describe Puppet::Application::Inspect do
       file = Tempfile.new("foo")
       resource = Puppet::Resource.new(:file, file.path, :parameters => {:audit => "all"})
       catalog.add_resource(resource)
-      Puppet::Resource::Catalog::Yaml.any_instance.stubs(:find).returns(catalog)
+      Puppet::Resource::Catalog::Json.any_instance.stubs(:find).returns(catalog)
 
       events = nil
 
@@ -96,7 +109,7 @@ describe Puppet::Application::Inspect do
       @inspect.run_command
 
       events.each do |event|
-        event.audited.should == true
+        expect(event.audited).to eq(true)
       end
     end
 
@@ -107,7 +120,7 @@ describe Puppet::Application::Inspect do
       file.close
       file.delete
       catalog.add_resource(resource)
-      Puppet::Resource::Catalog::Yaml.any_instance.stubs(:find).returns(catalog)
+      Puppet::Resource::Catalog::Json.any_instance.stubs(:find).returns(catalog)
 
       events = nil
 
@@ -120,7 +133,7 @@ describe Puppet::Application::Inspect do
       properties = events.inject({}) do |property_values, event|
         property_values.merge(event.property => event.previous_value)
       end
-      properties.should == {"ensure" => :absent}
+      expect(properties).to eq({"ensure" => :absent})
     end
 
     describe "when archiving to a bucket" do
@@ -128,7 +141,7 @@ describe Puppet::Application::Inspect do
         Puppet[:archive_files] = true
         Puppet[:archive_file_server] = "filebucketserver"
         @catalog = Puppet::Resource::Catalog.new
-        Puppet::Resource::Catalog::Yaml.any_instance.stubs(:find).returns(@catalog)
+        Puppet::Resource::Catalog::Json.any_instance.stubs(:find).returns(@catalog)
       end
 
       describe "when auditing files" do
@@ -149,7 +162,7 @@ describe Puppet::Application::Inspect do
           @inspect.run_command
         end
 
-        it "should not send unreadable files", :unless => Puppet.features.microsoft_windows? do
+        it "should not send unreadable files", :unless => (Puppet.features.microsoft_windows? || Puppet.features.root?) do
           File.open(@file, 'w') { |f| f.write('stuff') }
           File.chmod(0, @file)
           Puppet::FileBucketFile::Rest.any_instance.expects(:head).never
@@ -180,8 +193,8 @@ describe Puppet::Application::Inspect do
 
           @inspect.run_command
 
-          @report.logs.first.should_not == nil
-          @report.logs.first.message.should =~ /Could not back up/
+          expect(@report.logs.first).not_to eq(nil)
+          expect(@report.logs.first.message).to match(/Could not back up/)
         end
       end
 
@@ -234,7 +247,7 @@ describe Puppet::Application::Inspect do
         end
 
         @catalog = Puppet::Resource::Catalog.new
-        Puppet::Resource::Catalog::Yaml.any_instance.stubs(:find).returns(@catalog)
+        Puppet::Resource::Catalog::Json.any_instance.stubs(:find).returns(@catalog)
 
         Puppet::Transaction::Report::Rest.any_instance.expects(:save).with do |request|
           @report = request.instance
@@ -251,17 +264,17 @@ describe Puppet::Application::Inspect do
 
         @inspect.run_command
 
-        @report.status.should == "failed"
-        @report.logs.select{|log| log.message =~ /Could not inspect/}.size.should == 1
-        @report.resource_statuses.size.should == 1
-        @report.resource_statuses['Stub_type[foo]'].events.size.should == 1
+        expect(@report.status).to eq("failed")
+        expect(@report.logs.select{|log| log.message =~ /Could not inspect/}.size).to eq(1)
+        expect(@report.resource_statuses.size).to eq(1)
+        expect(@report.resource_statuses['Stub_type[foo]'].events.size).to eq(1)
 
         event = @report.resource_statuses['Stub_type[foo]'].events.first
-        event.property.should == "content"
-        event.status.should == "failure"
-        event.audited.should == true
-        event.instance_variables.should_not include "@previous_value"
-        event.instance_variables.should_not include :@previous_value
+        expect(event.property).to eq("content")
+        expect(event.status).to eq("failure")
+        expect(event.audited).to eq(true)
+        expect(event.instance_variables).not_to include "@previous_value"
+        expect(event.instance_variables).not_to include :@previous_value
       end
 
       it "should continue to the next resource" do
@@ -272,8 +285,8 @@ describe Puppet::Application::Inspect do
 
         @inspect.run_command
 
-        @report.resource_statuses.size.should == 2
-        @report.resource_statuses.keys.should =~ ['Stub_type[foo]', 'Stub_type[bar]']
+        expect(@report.resource_statuses.size).to eq(2)
+        expect(@report.resource_statuses.keys).to match_array(['Stub_type[foo]', 'Stub_type[bar]'])
       end
     end
   end

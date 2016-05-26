@@ -17,22 +17,22 @@ describe Puppet::FileServing::Configuration do
   end
 
   it "should make :new a private method" do
-    expect { Puppet::FileServing::Configuration.new }.to raise_error
+    expect { Puppet::FileServing::Configuration.new }.to raise_error(NoMethodError, /private method `new' called/)
   end
 
   it "should return the same configuration each time 'configuration' is called" do
-    Puppet::FileServing::Configuration.configuration.should equal(Puppet::FileServing::Configuration.configuration)
+    expect(Puppet::FileServing::Configuration.configuration).to equal(Puppet::FileServing::Configuration.configuration)
   end
 
   describe "when initializing" do
 
     it "should work without a configuration file" do
-      FileTest.stubs(:exists?).with(@path).returns(false)
+      Puppet::FileSystem.stubs(:exist?).with(@path).returns(false)
       expect { Puppet::FileServing::Configuration.configuration }.to_not raise_error
     end
 
     it "should parse the configuration file if present" do
-      FileTest.stubs(:exists?).with(@path).returns(true)
+      Puppet::FileSystem.stubs(:exist?).with(@path).returns(true)
       @parser = mock 'parser'
       @parser.expects(:parse).returns({})
       Puppet::FileServing::Configuration::Parser.stubs(:new).returns(@parser)
@@ -47,7 +47,7 @@ describe Puppet::FileServing::Configuration do
   describe "when parsing the configuration file" do
 
     before do
-      FileTest.stubs(:exists?).with(@path).returns(true)
+      Puppet::FileSystem.stubs(:exist?).with(@path).returns(true)
       @parser = mock 'parser'
       Puppet::FileServing::Configuration::Parser.stubs(:new).returns(@parser)
     end
@@ -55,7 +55,7 @@ describe Puppet::FileServing::Configuration do
     it "should set the mount list to the results of parsing" do
       @parser.expects(:parse).returns("one" => mock("mount"))
       config = Puppet::FileServing::Configuration.configuration
-      config.mounted?("one").should be_true
+      expect(config.mounted?("one")).to be_truthy
     end
 
     it "should not raise exceptions" do
@@ -66,12 +66,12 @@ describe Puppet::FileServing::Configuration do
     it "should replace the existing mount list with the results of reparsing" do
       @parser.expects(:parse).returns("one" => mock("mount"))
       config = Puppet::FileServing::Configuration.configuration
-      config.mounted?("one").should be_true
+      expect(config.mounted?("one")).to be_truthy
       # Now parse again
       @parser.expects(:parse).returns("two" => mock('other'))
       config.send(:readconfig, false)
-      config.mounted?("one").should be_false
-      config.mounted?("two").should be_true
+      expect(config.mounted?("one")).to be_falsey
+      expect(config.mounted?("two")).to be_truthy
     end
 
     it "should not replace the mount list until the file is entirely parsed successfully" do
@@ -80,18 +80,18 @@ describe Puppet::FileServing::Configuration do
       config = Puppet::FileServing::Configuration.configuration
       # Now parse again, so the exception gets thrown
       config.send(:readconfig, false)
-      config.mounted?("one").should be_true
+      expect(config.mounted?("one")).to be_truthy
     end
 
     it "should add modules and plugins mounts even if the file does not exist" do
-      FileTest.expects(:exists?).returns false # the file doesn't exist
+      Puppet::FileSystem.expects(:exist?).returns false # the file doesn't exist
       config = Puppet::FileServing::Configuration.configuration
-      config.mounted?("modules").should be_true
-      config.mounted?("plugins").should be_true
+      expect(config.mounted?("modules")).to be_truthy
+      expect(config.mounted?("plugins")).to be_truthy
     end
 
     it "should allow all access to modules and plugins if no fileserver.conf exists" do
-      FileTest.expects(:exists?).returns false # the file doesn't exist
+      Puppet::FileSystem.expects(:exist?).returns false # the file doesn't exist
       modules = stub 'modules', :empty? => true
       Puppet::FileServing::Mount::Modules.stubs(:new).returns(modules)
       modules.expects(:allow).with('*')
@@ -104,7 +104,7 @@ describe Puppet::FileServing::Configuration do
     end
 
     it "should not allow access from all to modules and plugins if the fileserver.conf provided some rules" do
-      FileTest.expects(:exists?).returns false # the file doesn't exist
+      Puppet::FileSystem.expects(:exist?).returns false # the file doesn't exist
 
       modules = stub 'modules', :empty? => false
       Puppet::FileServing::Mount::Modules.stubs(:new).returns(modules)
@@ -119,10 +119,10 @@ describe Puppet::FileServing::Configuration do
 
     it "should add modules and plugins mounts even if they are not returned by the parser" do
       @parser.expects(:parse).returns("one" => mock("mount"))
-      FileTest.expects(:exists?).returns true # the file doesn't exist
+      Puppet::FileSystem.expects(:exist?).returns true # the file doesn't exist
       config = Puppet::FileServing::Configuration.configuration
-      config.mounted?("modules").should be_true
-      config.mounted?("plugins").should be_true
+      expect(config.mounted?("modules")).to be_truthy
+      expect(config.mounted?("plugins")).to be_truthy
     end
   end
 
@@ -130,7 +130,7 @@ describe Puppet::FileServing::Configuration do
     it "should choose the named mount if one exists" do
       config = Puppet::FileServing::Configuration.configuration
       config.expects(:mounts).returns("one" => "foo")
-      config.find_mount("one", mock('env')).should == "foo"
+      expect(config.find_mount("one", mock('env'))).to eq("foo")
     end
 
     it "should return nil if there is no such named mount" do
@@ -140,7 +140,7 @@ describe Puppet::FileServing::Configuration do
       mount = mock 'mount'
       config.stubs(:mounts).returns("modules" => mount)
 
-      config.find_mount("foo", env).should be_nil
+      expect(config.find_mount("foo", env)).to be_nil
     end
   end
 
@@ -186,14 +186,14 @@ describe Puppet::FileServing::Configuration do
     it "should return nil if the mount cannot be found" do
       config.expects(:find_mount).returns nil
 
-      config.split_path(request).should be_nil
+      expect(config.split_path(request)).to be_nil
     end
 
     it "should return the mount and the relative path if the mount is found" do
       mount = stub 'mount', :name => "foo"
       config.expects(:find_mount).returns mount
 
-      config.split_path(request).should == [mount, "bar/baz"]
+      expect(config.split_path(request)).to eq([mount, "bar/baz"])
     end
 
     it "should remove any double slashes" do
@@ -201,7 +201,7 @@ describe Puppet::FileServing::Configuration do
       mount = stub 'mount', :name => "foo"
       config.expects(:find_mount).returns mount
 
-      config.split_path(request).should == [mount, "bar/baz"]
+      expect(config.split_path(request)).to eq([mount, "bar/baz"])
     end
 
     it "should fail if the path contains .." do
@@ -217,7 +217,7 @@ describe Puppet::FileServing::Configuration do
       mount = stub 'mount', :name => "foo"
       config.expects(:find_mount).returns mount
 
-      config.split_path(request).should == [mount, nil]
+      expect(config.split_path(request)).to eq([mount, nil])
     end
 
     it "should add 'modules/' to the relative path if the modules mount is used but not specified, for backward compatibility" do
@@ -225,7 +225,7 @@ describe Puppet::FileServing::Configuration do
       mount = stub 'mount', :name => "modules"
       config.expects(:find_mount).returns mount
 
-      config.split_path(request).should == [mount, "foo/bar"]
+      expect(config.split_path(request)).to eq([mount, "foo/bar"])
     end
   end
 end

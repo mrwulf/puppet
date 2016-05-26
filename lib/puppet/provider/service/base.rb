@@ -11,13 +11,27 @@ Puppet::Type.type(:service).provide :base, :parent => :service do
 
   commands :kill => "kill"
 
+  # get the proper 'ps' invocation for the platform
+  # ported from the facter 2.x implementation, since facter 3.x
+  # is dropping the fact (for which this was the only use)
+  def getps
+    case Facter.value(:operatingsystem)
+    when 'OpenWrt'
+      'ps www'
+    when 'FreeBSD', 'NetBSD', 'OpenBSD', 'Darwin', 'DragonFly'
+      'ps auxwww'
+    else
+      'ps -ef'
+     end
+  end
+  private :getps
+
   # Get the process ID for a running process. Requires the 'pattern'
   # parameter.
   def getpid
     @resource.fail "Either stop/status commands or a pattern must be specified" unless @resource[:pattern]
-    ps = Facter["ps"].value
-    @resource.fail "You must upgrade Facter to a version that includes 'ps'" unless ps and ps != ""
     regex = Regexp.new(@resource[:pattern])
+    ps = getps
     self.debug "Executing '#{ps}'"
     IO.popen(ps) { |table|
       table.each_line { |line|
@@ -31,6 +45,7 @@ Puppet::Type.type(:service).provide :base, :parent => :service do
 
     nil
   end
+  private :getpid
 
   # Check if the process is running.  Prefer the 'status' parameter,
   # then 'statuscmd' method, then look in the process table.  We give
@@ -48,7 +63,7 @@ Puppet::Type.type(:service).provide :base, :parent => :service do
       else
         return :stopped
       end
-    elsif pid = self.getpid
+    elsif pid = getpid
       self.debug "PID is #{pid}"
       return :running
     else
@@ -93,7 +108,7 @@ Puppet::Type.type(:service).provide :base, :parent => :service do
       begin
         output = kill pid
       rescue Puppet::ExecutionFailure
-        @resource.fail "Could not kill #{self.name}, PID #{pid}: #{output}"
+        @resource.fail Puppet::Error, "Could not kill #{self.name}, PID #{pid}: #{output}", $!
       end
       return true
     end

@@ -14,7 +14,7 @@ module Puppet::Util::Errors
   # Add line and file info to the supplied exception if info is available from
   # this object, is appropriately populated and the supplied exception supports
   # it.  When other is supplied, the backtrace will be copied to the error
-  # object.
+  # object and the 'original' will be dropped from the error.
   #
   # @param error [Exception] exception that is populated with info
   # @param other [Exception] original exception, source of backtrace info
@@ -25,7 +25,9 @@ module Puppet::Util::Errors
     error.original ||= other if error.respond_to?(:original=)
 
     error.set_backtrace(other.backtrace) if other and other.respond_to?(:backtrace)
-
+    # It is not meaningful to keep the wrapped exception since its backtrace has already
+    # been adopted by the error. (The instance variable is private for good reasons).
+    error.instance_variable_set(:@original, nil)
     error
   end
 
@@ -85,6 +87,12 @@ module Puppet::Util::Errors
   #   the given arguments.
   #   @param [Class] type of error
   #   @param [String] message error message(s)
+  # @overload fail(error_klass, message, ..)
+  #   Throw an exception of type error_klass with a message concatenated from
+  #   the given arguments.
+  #   @param [Class] type of error
+  #   @param [String] message error message(s)
+  #   @param [Exception] original exception, source of backtrace info
   def fail(*args)
     if args[0].is_a?(Class)
       type = args.shift
@@ -92,7 +100,8 @@ module Puppet::Util::Errors
       type = Puppet::Error
     end
 
-    error = adderrorcontext(type.new(args.join(" ")))
+    other = args.count > 1 ? args.pop : nil
+    error = adderrorcontext(type.new(args.join(" ")), other)
 
     raise error
   end

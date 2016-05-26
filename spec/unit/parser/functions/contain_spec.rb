@@ -3,11 +3,20 @@ require 'spec_helper'
 require 'puppet_spec/compiler'
 require 'puppet/parser/functions'
 require 'matchers/containment_matchers'
+require 'matchers/resource'
 require 'matchers/include_in_order'
+require 'unit/parser/functions/shared'
+
 
 describe 'The "contain" function' do
   include PuppetSpec::Compiler
   include ContainmentMatchers
+  include Matchers::Resource
+
+  before(:each) do
+    compiler  = Puppet::Parser::Compiler.new(Puppet::Node.new("foo"))
+    @scope = Puppet::Parser::Scope.new(compiler)
+  end
 
   it "includes the class" do
     catalog = compile_to_catalog(<<-MANIFEST)
@@ -23,6 +32,41 @@ describe 'The "contain" function' do
     MANIFEST
 
     expect(catalog.classes).to include("contained")
+  end
+
+  it "includes the class when using a fully qualified anchored name" do
+    catalog = compile_to_catalog(<<-MANIFEST)
+      class contained {
+        notify { "contained": }
+      }
+
+      class container {
+        contain ::contained
+      }
+
+      include container
+    MANIFEST
+
+    expect(catalog.classes).to include("contained")
+  end
+
+  it "ensures that the edge is with the correct class" do
+    catalog = compile_to_catalog(<<-MANIFEST)
+      class outer {
+        class named { }
+        contain outer::named
+      }
+
+      class named { }
+
+      include named
+      include outer
+    MANIFEST
+
+    expect(catalog).to have_resource("Class[Named]")
+    expect(catalog).to have_resource("Class[Outer]")
+    expect(catalog).to have_resource("Class[Outer::Named]")
+    expect(catalog).to contain_class("outer::named").in("outer")
   end
 
   it "makes the class contained in the current class" do
@@ -182,4 +226,8 @@ describe 'The "contain" function' do
       )
     end
   end
+
+  it_should_behave_like 'all functions transforming relative to absolute names', :function_contain
+  it_should_behave_like 'an inclusion function, regardless of the type of class reference,', :contain
+
 end

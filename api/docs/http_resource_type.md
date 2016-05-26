@@ -25,7 +25,7 @@ Find
 Get info about a specific class, defined type, or node, by name. Returns a
 single resource_type response object (see "Schema" below).
 
-    GET /:environment/resource_type/:nodename
+    GET /puppet/v3/resource_type/:class_type_or_node_name?environment=:environment
 
 > **Note:** Although no two classes or defined types may have the same name,
 > it's possible for a node definition to have the same name as a class or
@@ -40,7 +40,7 @@ GET
 
 ### Supported Formats
 
-Accept: pson, text/pson
+PSON
 
 ### Parameters
 
@@ -50,32 +50,32 @@ None
 
 #### Resource Type Found
 
-    GET /env/resource_type/athing
+    GET /puppet/v3/resource_type/athing?environment=env
 
     HTTP 200 OK
     Content-Type: text/pson
 
     {
       "line": 7,
-      "file": "/etc/puppet/manifests/site.pp",
+      "file": "/etc/puppetlabs/puppet/manifests/site.pp",
       "name":"athing",
       "kind":"class"
     }
 
 #### Resource Type Not Found
 
-    GET /env/resource_type/resource_type_does_not_exist
+    GET /puppet/v3/resource_type/resource_type_does_not_exist?environment=env
 
-    HTTP 404 Not Found: Could not find resource_type resource_type_does_not_exist
+    HTTP 404 Not Found
     Content-Type: text/plain
 
     Not Found: Could not find resource_type resource_type_does_not_exist
 
 #### No Resource Type Name Given
 
-    GET /env/resource_type/
+    GET /puppet/v3/resource_type?environment=env
 
-    HTTP/1.1 400 No request key specified in /env/resource_type/
+    HTTP/1.1 400 Bad Request
     Content-Type: text/plain
 
     No request key specified in /env/resource_type/
@@ -86,7 +86,7 @@ Search
 List all resource types matching a regular expression. Returns an array of
 resource_type response objects (see "Schema" below).
 
-    GET /:environment/resource_types/:search_string
+    GET /puppet/v3/resource_types/:search_string?environment=:environment
 
 The `search_string` is required. It must be either a Ruby regular expression or
 the string `*` (which will match all resource types). Surrounding slashes are
@@ -110,28 +110,28 @@ Accept: pson, text/pson
 
 #### Search With Results
 
-    GET /env/resource_types/*
+    GET /puppet/v3/resource_types/*?environment=env
 
     HTTP 200 OK
     Content-Type: text/pson
 
     [
       {
-        "file": "/etc/puppet/manifests/site.pp",
+        "file": "/etc/puppetlabs/puppet/manifests/site.pp",
         "kind": "class",
         "line": 7,
         "name": "athing"
       },
       {
         "doc": "An example class\n",
-        "file": "/etc/puppet/manifests/site.pp",
+        "file": "/etc/puppetlabs/puppet/manifests/site.pp",
         "kind": "class",
         "line": 11,
         "name": "bthing",
         "parent": "athing"
       },
       {
-        "file": "/etc/puppet/manifests/site.pp",
+        "file": "/etc/puppetlabs/puppet/manifests/site.pp",
         "kind": "defined_type",
         "line": 1,
         "name": "hello",
@@ -141,13 +141,13 @@ Accept: pson, text/pson
         }
       },
       {
-        "file": "/etc/puppet/manifests/site.pp",
+        "file": "/etc/puppetlabs/puppet/manifests/site.pp",
         "kind": "node",
         "line": 14,
         "name": "web01.example.com"
       },
       {
-        "file": "/etc/puppet/manifests/site.pp",
+        "file": "/etc/puppetlabs/puppet/manifests/site.pp",
         "kind": "node",
         "line": 17,
         "name": "default"
@@ -157,7 +157,7 @@ Accept: pson, text/pson
 
 #### Search Not Found
 
-    GET /env/resource_types/pattern.that.finds.no.resources
+    GET /puppet/v3/resource_types/pattern.that.finds.no.resources?environment=env
 
     HTTP/1.1 404 Not Found: Could not find instances in resource_type with 'pattern.that.finds.no.resources'
     Content-Type: text/plain
@@ -166,20 +166,20 @@ Accept: pson, text/pson
 
 #### No Search Term Given
 
-    GET /env/resource_types/
+    GET /puppet/v3/resource_types?environment=env
 
-    HTTP/1.1 400 No request key specified in /env/resource_types/
+    HTTP/1.1 400 Bad Request
     Content-Type: text/plain
 
-    No request key specified in /env/resource_types/
+    No request key specified in /puppet/v3/resource_types
 
 #### Search Term Is an Invalid Regular Expression
 
 Searching on `[-` for instance.
 
-    GET /env/resource_types/%5b-
+    GET /puppet/v3/resource_types/%5b-?environment=env
 
-    HTTP/1.1 400 Invalid regex '[-': premature end of char-class: /[-/
+    HTTP/1.1 400 Bad Request
     Content-Type: text/plain
 
     Invalid regex '[-': premature end of char-class: /[-/
@@ -188,42 +188,17 @@ Searching on `[-` for instance.
 
 List all classes:
 
-    GET /:environment/resource_types/*?kind=class
+    GET /puppet/v3/resource_types/*?environment=:environment&kind=class
 
 List matching a regular expression:
 
-    GET /:environment/resource_types/foo.*bar
+    GET /puppet/v3/resource_types/foo.*bar?environment=:environment
 
 Schema
 ------
 
-A resource_type response body has has the following fields, of which only name
-and kind are guaranteed to be present:
-
-    doc: string
-        Any documentation comment from the type definition
-
-    line: integer
-        The line number where the type is defined
-
-    file: string
-        The full path of the file where the type is defined
-
-    name: string
-        The fully qualified name
-
-    kind: string, one of "class", "node", or "defined_type"
-        The kind of object the type represents
-
-    parent: string
-        If the type inherits from another type, the name of that type
-
-    parameters: hash{string => (string or "null")}
-        The default arguments to the type. If an argument has no default value,
-        the value is represented by a literal "null" (without quotes in pson).
-        Default values are the string representation of that value, even for more
-        complex structures (e.g. the hash { key => 'val', key2 => 'val2' } would
-        be represented in pson as "{key => \"val\", key2 => \"val2\"}".
+A `resource_type` response body conforms to
+[the `resource_type` schema.](../schemas/resource_type.json)
 
 Source
 ------

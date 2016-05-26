@@ -27,21 +27,33 @@ describe provider_class do
 
     @provider.stubs(:command).with(:update_rc).returns "update_rc"
     @provider.stubs(:command).with(:invoke_rc).returns "invoke_rc"
+    @provider.stubs(:command).with(:service).returns "service"
 
     @provider.stubs(:update_rc)
     @provider.stubs(:invoke_rc)
   end
 
+  operatingsystem = [ 'Debian', 'CumulusLinux' ]
+  operatingsystem.each do |os|
+    it "should be the default provider on #{os}" do
+      Facter.expects(:value).with(:operatingsystem).at_least_once.returns(os)
+      if os == 'Debian'
+        Facter.expects(:value).with(:operatingsystemmajrelease).returns('7')
+      end
+      expect(provider_class.default?).to be_truthy
+    end
+  end
+
   it "should have an enabled? method" do
-    @provider.should respond_to(:enabled?)
+    expect(@provider).to respond_to(:enabled?)
   end
 
   it "should have an enable method" do
-    @provider.should respond_to(:enable)
+    expect(@provider).to respond_to(:enable)
   end
 
   it "should have a disable method" do
-    @provider.should respond_to(:disable)
+    expect(@provider).to respond_to(:disable)
   end
 
   describe "when enabling" do
@@ -73,34 +85,51 @@ describe provider_class do
   describe "when checking whether it is enabled" do
     it "should call Kernel.system() with the appropriate parameters" do
       @provider.expects(:system).with("/usr/sbin/invoke-rc.d", "--quiet", "--query", @resource[:name], "start").once
+      $CHILD_STATUS.stubs(:exitstatus).returns(0)
       @provider.enabled?
     end
 
     it "should return true when invoke-rc.d exits with 104 status" do
       @provider.stubs(:system)
       $CHILD_STATUS.stubs(:exitstatus).returns(104)
-      @provider.enabled?.should == :true
+      expect(@provider.enabled?).to eq(:true)
     end
 
     it "should return true when invoke-rc.d exits with 106 status" do
       @provider.stubs(:system)
       $CHILD_STATUS.stubs(:exitstatus).returns(106)
-      @provider.enabled?.should == :true
+      expect(@provider.enabled?).to eq(:true)
     end
 
-    context "when invoke-rc.d exits with 105 status" do
+    shared_examples "manually queries service status" do |status|
       it "links count is 4" do
         @provider.stubs(:system)
-        $CHILD_STATUS.stubs(:exitstatus).returns(105)
+        $CHILD_STATUS.stubs(:exitstatus).returns(status)
         @provider.stubs(:get_start_link_count).returns(4)
-        @provider.enabled?.should == :true
+        expect(@provider.enabled?).to eq(:true)
       end
       it "links count is less than 4" do
         @provider.stubs(:system)
-        $CHILD_STATUS.stubs(:exitstatus).returns(105)
+        $CHILD_STATUS.stubs(:exitstatus).returns(status)
         @provider.stubs(:get_start_link_count).returns(3)
-        @provider.enabled?.should == :false
+        expect(@provider.enabled?).to eq(:false)
       end
+    end
+
+    context "when invoke-rc.d exits with 101 status" do
+      it_should_behave_like "manually queries service status", 101
+    end
+
+    context "when invoke-rc.d exits with 105 status" do
+      it_should_behave_like "manually queries service status", 105
+    end
+
+    context "when invoke-rc.d exits with 101 status" do
+      it_should_behave_like "manually queries service status", 101
+    end
+
+    context "when invoke-rc.d exits with 105 status" do
+      it_should_behave_like "manually queries service status", 105
     end
 
     # pick a range of non-[104.106] numbers, strings and booleans to test with.
@@ -108,9 +137,17 @@ describe provider_class do
       it "should return false when invoke-rc.d exits with #{exitstatus} status" do
         @provider.stubs(:system)
         $CHILD_STATUS.stubs(:exitstatus).returns(exitstatus)
-        @provider.enabled?.should == :false
+        expect(@provider.enabled?).to eq(:false)
       end
     end
   end
 
+  describe "when checking service status" do
+    it "should use the service command" do
+      Facter.stubs(:value).with(:operatingsystem).returns('Debian')
+      Facter.stubs(:value).with(:operatingsystemmajrelease).returns('8')
+      @resource.stubs(:[]).with(:hasstatus).returns(:true)
+      expect(@provider.statuscmd).to eq(["service", @resource[:name], "status"])
+    end
+  end
 end

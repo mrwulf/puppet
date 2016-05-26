@@ -16,6 +16,10 @@ This file is then used by binary_search_specs.rb so that:
 
 will begin bisecting runs before and after this spec until it narrows down to a candidate which seems to be effecting foo_spec.rb and causing it to fail.
 
+### with parallel-spec
+
+To get the groups that the parallel task is running, run: be util/rspec_grouper 1000. Then run each spit out file with "be util/rspec_runner <groupfile>". If it fails, rename it to spec_order.txt and run the binary script.
+
 dev-puppet-master
 -----------------
 
@@ -67,4 +71,10 @@ Now you should be able to:
 ```bash
 jpartlow@percival:~/work/puppet$ curl -k -H 'Accept: text/pson' https://puppetmaster:8140/main/resource/user/nobody
 {"type":"User","title":"nobody","tags":["user","nobody"],"exported":false,"parameters":{"ensure":"present","home":"/nonexistent","uid":65534,"gid":65534,"comment":"nobody","shell":"/bin/sh","groups":[],"expiry":"absent","provider":"useradd","membership":"minimum","role_membership":"minimum","auth_membership":"minimum","profile_membership":"minimum","key_membership":"minimum","attribute_membership":"minimum","loglevel":"notice"}}
+```
+
+For more complex authorization cases you will need to reference the agents keys:
+
+```bash
+jpartlow@percival:~/work/puppet$ curl -H 'Accept: text/pson' --cert `puppet agent --configprint hostcert` --key `be puppet agent --configprint hostprivkey` --cacert `be puppet agent --configprint localcacert` https://puppetmaster:8140/foo/node/percival.corp.puppetlabs.net
 ```

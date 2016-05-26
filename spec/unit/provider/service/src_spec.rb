@@ -37,8 +37,8 @@ describe provider_class do
   end
 
   describe ".instances" do
-    it "should has a .instances method" do
-      provider_class.should respond_to :instances
+    it "should have a .instances method" do
+      expect(provider_class).to respond_to :instances
     end
 
     it "should get a list of running services" do
@@ -50,34 +50,48 @@ myservice.3:::/usr/sbin/inetd:0:0:/dev/console:/dev/console:/dev/console:-O:-Q:-
 myservice.4:::/usr/sbin/inetd:0:0:/dev/console:/dev/console:/dev/console:-O:-Q:-K:0:0:20:0:0:-d:20:tcpip:
 _EOF_
       provider_class.stubs(:lssrc).returns sample_output
-      provider_class.instances.map(&:name).should == [
+      expect(provider_class.instances.map(&:name)).to eq([
         'myservice.1',
         'myservice.2',
         'myservice.3',
         'myservice.4'
-      ]
+      ])
     end
 
   end
 
   describe "when starting a service" do
     it "should execute the startsrc command" do
-      @provider.expects(:execute).with(['/usr/bin/startsrc', '-s', "myservice"], {:override_locale => false, :squelch => true, :failonfail => true})
+      @provider.expects(:execute).with(['/usr/bin/startsrc', '-s', "myservice"], {:override_locale => false, :squelch => false, :combine => true, :failonfail => true})
+      @provider.expects(:status).returns :running
       @provider.start
+    end
+
+    it "should error if timeout occurs while stopping the service" do
+      @provider.expects(:execute).with(['/usr/bin/startsrc', '-s', "myservice"], {:override_locale => false, :squelch => false, :combine => true, :failonfail => true})
+      Timeout.expects(:timeout).with(60).raises(Timeout::Error)
+      expect { @provider.start }.to raise_error Puppet::Error, ('Timed out waiting for myservice to transition states')
     end
   end
 
   describe "when stopping a service" do
     it "should execute the stopsrc command" do
-      @provider.expects(:execute).with(['/usr/bin/stopsrc', '-s', "myservice"], {:override_locale => false, :squelch => true, :failonfail => true})
+      @provider.expects(:execute).with(['/usr/bin/stopsrc', '-s', "myservice"], {:override_locale => false, :squelch => false, :combine => true, :failonfail => true})
+      @provider.expects(:status).returns :stopped
       @provider.stop
+    end
+
+    it "should error if timeout occurs while stopping the service" do
+      @provider.expects(:execute).with(['/usr/bin/stopsrc', '-s', "myservice"], {:override_locale => false, :squelch => false, :combine => true, :failonfail => true})
+      Timeout.expects(:timeout).with(60).raises(Timeout::Error)
+      expect { @provider.stop }.to raise_error Puppet::Error, ('Timed out waiting for myservice to transition states')
     end
   end
 
   describe "should have a set of methods" do
     [:enabled?, :enable, :disable, :start, :stop, :status, :restart].each do |method|
       it "should have a #{method} method" do
-        @provider.should respond_to(method)
+        expect(@provider).to respond_to(method)
       end
     end
   end
@@ -99,19 +113,20 @@ _EOF_
   describe "when checking if it is enabled" do
     it "should execute the lsitab command" do
       @provider.expects(:execute).with(['/usr/sbin/lsitab', 'myservice'], {:combine => true, :failonfail => false})
+      $CHILD_STATUS.stubs(:exitstatus).returns(0)
       @provider.enabled?
     end
 
     it "should return false when lsitab returns non-zero" do
       @provider.stubs(:execute)
       $CHILD_STATUS.stubs(:exitstatus).returns(1)
-      @provider.enabled?.should == :false
+      expect(@provider.enabled?).to eq(:false)
     end
 
     it "should return true when lsitab returns zero" do
       @provider.stubs(:execute)
       $CHILD_STATUS.stubs(:exitstatus).returns(0)
-      @provider.enabled?.should == :true
+      expect(@provider.enabled?).to eq(:true)
     end
   end
 
@@ -124,7 +139,7 @@ _EOF_
 _EOF_
 
       @provider.expects(:execute).with(['/usr/bin/lssrc', '-s', "myservice"]).returns sample_output
-      @provider.status.should == :running
+      expect(@provider.status).to eq(:running)
     end
 
     it "should execute status and return stopped if the subsystem is inoperative" do
@@ -134,7 +149,7 @@ _EOF_
 _EOF_
 
       @provider.expects(:execute).with(['/usr/bin/lssrc', '-s', "myservice"]).returns sample_output
-      @provider.status.should == :stopped
+      expect(@provider.status).to eq(:stopped)
     end
 
     it "should execute status and return nil if the status is not known" do
@@ -144,7 +159,7 @@ _EOF_
 _EOF_
 
       @provider.expects(:execute).with(['/usr/bin/lssrc', '-s', "myservice"]).returns sample_output
-      @provider.status.should == nil
+      expect(@provider.status).to eq(nil)
     end
   end
 
@@ -159,14 +174,15 @@ _EOF_
       @provider.restart
     end
 
-    it "should execute restart which runs stopsrc then startsrc" do
+    it "should execute restart which runs stop then start" do
       sample_output =  <<_EOF_
 #subsysname:synonym:cmdargs:path:uid:auditid:standin:standout:standerr:action:multi:contact:svrkey:svrmtype:priority:signorm:sigforce:display:waittime:grpname:
 myservice::--no-daemonize:/usr/sbin/puppetd:0:0:/dev/null:/var/log/puppet.log:/var/log/puppet.log:-O:-Q:-S:0:0:20:15:9:-d:20::"
 _EOF_
+
       @provider.expects(:execute).with(['/usr/bin/lssrc', '-Ss', "myservice"]).returns sample_output
-      @provider.expects(:execute).with(['/usr/bin/stopsrc', '-s', "myservice"], {:override_locale => false, :squelch => true, :failonfail => true})
-      @provider.expects(:execute).with(['/usr/bin/startsrc', '-s', "myservice"], {:override_locale => false, :squelch => true, :failonfail => true})
+      @provider.expects(:stop)
+      @provider.expects(:start)
       @provider.restart
     end
   end

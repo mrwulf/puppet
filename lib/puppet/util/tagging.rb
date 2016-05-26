@@ -1,76 +1,118 @@
-# Created on 2008-01-19
-# Copyright Luke Kanies
+require 'puppet/util/tag_set'
 
-# A common module to handle tagging.
-#
-# So, do you want the bad news or the good news first?
-#
-# The bad news is that using an array here is hugely costly compared to using
-# a hash.  Like, the same speed empty, 50 percent slower with one item, and
-# 300 percent slower at 6 - one of our common peaks for tagging items.
-#
-# ...and that assumes an efficient implementation, just using include?.  These
-# methods have even more costs hidden in them.
-#
-# The good news is that this module has no API.  Various objects directly
-# interact with their `@tags` member as an array, or dump it directly in YAML,
-# or whatever.
-#
-# So, er, you can't actually change this.  No matter how much you want to be
-# cause it is inefficient in both CPU and object allocation terms.
-#
-# Good luck, my friend. --daniel 2012-07-17
 module Puppet::Util::Tagging
-  # Add a tag to our current list.  These tags will be added to all
-  # of the objects contained in this scope.
+  ValidTagRegex = /^[0-9A-Za-z_][0-9A-Za-z_:.-]*$/
+
+  # Add a tag to the current tag set.
+  # When a tag set is used for a scope, these tags will be added to all of
+  # the objects contained in this scope when the objects are finished.
+  #
   def tag(*ary)
-    @tags ||= []
+    @tags ||= new_tags
 
-    qualified = []
-
-    ary.collect { |tag| tag.to_s.downcase }.each do |tag|
-      fail(Puppet::ParseError, "Invalid tag #{tag.inspect}") unless valid_tag?(tag)
-      qualified << tag if tag.include?("::")
-      @tags << tag unless @tags.include?(tag)
+    ary.flatten.each do |tag|
+      name = tag.to_s.downcase
+      # Add the tag before testing if it's valid since this means that
+      # we never need to test the same valid tag twice. This speeds things
+      # up since we get a lot of duplicates and rarely fail on bad tags
+      if @tags.add?(name)
+        # not seen before, so now we test if it is valid
+        if name =~ ValidTagRegex
+          if split_qualified_tags?
+          # avoid adding twice by first testing if the string contains '::'
+            @tags.merge(name.split('::')) if name.include?('::')
+          end
+        else
+          @tags.delete(name)
+          fail(Puppet::ParseError, "Invalid tag '#{name}'")
+        end
+      end
     end
-
-    handle_qualified_tags( qualified )
   end
 
-  # Are we tagged with the provided tag?
+  # Add a name to the current tag set. Silently ignore names that does not
+  # represent valid tags.
+  # 
+  # Use this method instead of doing this:
+  #
+  #  tag(name) if is_valid?(name)
+  #
+  # since that results in testing the same string twice
+  #
+  def tag_if_valid(name)
+    if name.is_a?(String) && name =~ ValidTagRegex
+      name = name.downcase
+      @tags ||= new_tags
+      if @tags.add?(name) && name.include?('::')
+        @tags.merge(name.split('::'))
+      end
+    end
+  end
+
+  # Answers if this resource is tagged with at least one of the given tags.
+  #
+  # The given tags are converted to downcased strings before the match is performed.
+  #
+  # @param *tags [String] splat of tags to look for
+  # @return [Boolean] true if this instance is tagged with at least one of the provided tags
+  #
   def tagged?(*tags)
-    not ( self.tags & tags.flatten.collect { |t| t.to_s } ).empty?
+    raw_tagged?(tags.collect {|t| t.to_s.downcase})
+  end
+
+  # Answers if this resource is tagged with at least one of the tags given in downcased string form.
+  #
+  # The method is a faster variant of the tagged? method that does no conversion of its
+  # arguments.
+  #
+  # @param tag_array [Array[String]] array of tags to look for
+  # @return [Boolean] true if this instance is tagged with at least one of the provided tags
+  #
+  def raw_tagged?(tag_array)
+    my_tags = self.tags
+    !tag_array.index { |t| my_tags.include?(t) }.nil?
+  end
+
+  # Only use this method when copying known tags from one Tagging instance to another
+  def set_tags(tag_source)
+    @tags = tag_source.tags
   end
 
   # Return a copy of the tag list, so someone can't ask for our tags
   # and then modify them.
   def tags
-    @tags ||= []
+    @tags ||= new_tags
     @tags.dup
   end
 
-  def tags=(tags)
-    @tags = []
+  # Merge tags from a tagged instance with no attempts to split, downcase
+  # or verify the tags
+  def merge_tags(tag_source)
+    @tags ||= new_tags
+    tag_source.merge_into(@tags)
+  end
 
-    return if tags.nil? or tags == ""
+  # Merge the tags of this instance into the provide TagSet
+  def merge_into(tag_set)
+    tag_set.merge(@tags) unless @tags.nil?
+  end
+
+  def tags=(tags)
+    @tags = new_tags
+
+    return if tags.nil?
 
     tags = tags.strip.split(/\s*,\s*/) if tags.is_a?(String)
-
-    tags.each {|t| tag(t) }
+    tag(*tags)
   end
 
   private
 
-  def handle_qualified_tags(qualified)
-    qualified.each do |name|
-      name.split("::").each do |tag|
-        @tags << tag unless @tags.include?(tag)
-      end
-    end
+  def split_qualified_tags?
+    true
   end
 
-  ValidTagRegex = /^\w[-\w:.]*$/
-  def valid_tag?(tag)
-    tag.is_a?(String) and tag =~ ValidTagRegex
+  def new_tags
+    Puppet::Util::TagSet.new
   end
 end

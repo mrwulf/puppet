@@ -30,7 +30,7 @@ Puppet::Type.type(:zone).provide(:solaris) do
 
   def multi_conf(name, should, &action)
     has = properties[name]
-    has = [] if has == :absent
+    has = [] if !has || has == :absent
     rms = has - should
     adds = should - has
     (rms.map{|o| action.call(:rm,o)} + adds.map{|o| action.call(:add,o)}).join("\n")
@@ -159,7 +159,7 @@ Puppet::Type.type(:zone).provide(:solaris) do
     end
   end
 
-  def install(dummy_argument=:work_arround_for_ruby_GC_bug)
+  def install
     if @resource[:clone] # TODO: add support for "-s snapshot"
       zoneadm :clone, @resource[:clone]
     elsif @resource[:install_args]
@@ -261,14 +261,14 @@ Puppet::Type.type(:zone).provide(:solaris) do
       # which makes zoneadmd mount the zone root
       zoneadm :ready unless File.directory?(zoneetc)
 
-      unless File.exists?(sysidcfg)
+      unless Puppet::FileSystem.exist?(sysidcfg)
         begin
           File.open(sysidcfg, "w", 0600) do |f|
             f.puts cfg
           end
         rescue => detail
           puts detail.stacktrace if Puppet[:debug]
-          raise Puppet::Error, "Could not create sysidcfg: #{detail}"
+          raise Puppet::Error, "Could not create sysidcfg: #{detail}", detail.backtrace
         end
       end
     end
@@ -345,7 +345,7 @@ Puppet::Type.type(:zone).provide(:solaris) do
   def zoneadm(*cmd)
     adm("-z", @resource[:name], *cmd)
   rescue Puppet::ExecutionFailure => detail
-    self.fail "Could not #{cmd[0]} zone: #{detail}"
+    self.fail Puppet::Error, "Could not #{cmd[0]} zone: #{detail}", detail
   end
 
   def zonecfg(*cmd)
@@ -354,7 +354,7 @@ Puppet::Type.type(:zone).provide(:solaris) do
     begin
       cfg("-z", self.name, *cmd)
     rescue Puppet::ExecutionFailure => detail
-      self.fail "Could not #{cmd[0]} zone: #{detail}"
+      self.fail Puppet::Error, "Could not #{cmd[0]} zone: #{detail}", detail
     end
   end
 end

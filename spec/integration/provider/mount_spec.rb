@@ -20,9 +20,11 @@ describe "mount provider (integration)", :unless => Puppet.features.microsoft_wi
     @current_options = "local"
     @current_device = "/dev/disk1s1"
     Puppet::Type.type(:mount).defaultprovider.stubs(:default_target).returns(@fake_fstab)
-    Facter.stubs(:value).with(:kernel).returns('Darwin')
-    Facter.stubs(:value).with(:operatingsystem).returns('Darwin')
-    Facter.stubs(:value).with(:osfamily).returns('Darwin')
+    Facter.stubs(:value).with(:hostname).returns('some_host')
+    Facter.stubs(:value).with(:domain).returns('some_domain')
+    Facter.stubs(:value).with(:kernel).returns('Linux')
+    Facter.stubs(:value).with(:operatingsystem).returns('RedHat')
+    Facter.stubs(:value).with(:osfamily).returns('RedHat')
     Puppet::Util::ExecutionStub.set do |command, options|
       case command[0]
       when %r{/s?bin/mount}
@@ -33,19 +35,15 @@ describe "mount provider (integration)", :unless => Puppet.features.microsoft_wi
             ''
           end
         else
-          command.length.should == 4
-          command[1].should == '-o'
-          command[3].should == '/Volumes/foo_disk'
-          @mounted.should == false # verify that we don't try to call "mount" redundantly
-          @current_options = command[2]
+          expect(command.last).to eq('/Volumes/foo_disk')
           @current_device = check_fstab(true)
           @mounted = true
           ''
         end
       when %r{/s?bin/umount}
-        command.length.should == 2
-        command[1].should == '/Volumes/foo_disk'
-        @mounted.should == true # "umount" doesn't work when device not mounted (see #6632)
+        expect(command.length).to eq(2)
+        expect(command[1]).to eq('/Volumes/foo_disk')
+        expect(@mounted).to eq(true) # "umount" doesn't work when device not mounted (see #6632)
         @mounted = false
         ''
       else
@@ -62,12 +60,12 @@ describe "mount provider (integration)", :unless => Puppet.features.microsoft_wi
     # Verify that the fake fstab has the expected data in it
     fstab_contents = File.read(@fake_fstab).split("\n").reject { |x| x =~ /^#|^$/ }
     if expected_to_be_present
-      fstab_contents.length().should == 1
+      expect(fstab_contents.length()).to eq(1)
       device, rest_of_line = fstab_contents[0].split(/\t/,2)
-      rest_of_line.should == "/Volumes/foo_disk\tmsdos\t#{@desired_options}\t0\t0"
+      expect(rest_of_line).to eq("/Volumes/foo_disk\tmsdos\t#{@desired_options}\t0\t0")
       device
     else
-      fstab_contents.length().should == 0
+      expect(fstab_contents.length()).to eq(0)
       nil
     end
   end
@@ -108,25 +106,32 @@ describe "mount provider (integration)", :unless => Puppet.features.microsoft_wi
             end
             expected_fstab_data = (ensure_setting != :absent)
             describe "When setting ensure => #{ensure_setting}" do
-              ["local", "journaled"].each do |options_setting|
-                describe "When setting options => #{options_setting}" do
+              ["local", "journaled", "", nil].each do |options_setting|
+                describe "When setting options => '#{options_setting}'" do
                   it "should leave the system in the #{expected_final_state ? 'mounted' : 'unmounted'} state, #{expected_fstab_data ? 'with' : 'without'} data in /etc/fstab" do
-                    pending("Solaris: The mock :operatingsystem value does not get changed in lib/puppet/provider/mount/parsed.rb", :if => family == "Solaris")
-                    @desired_options = options_setting
-                    run_in_catalog(:ensure=>ensure_setting, :options => options_setting)
-                    @mounted.should == expected_final_state
-                    if expected_fstab_data
-                      check_fstab(expected_fstab_data).should == "/dev/disk1s1"
+                    if family == "Solaris"
+                      skip("Solaris: The mock :operatingsystem value does not get changed in lib/puppet/provider/mount/parsed.rb")
                     else
-                      check_fstab(expected_fstab_data).should == nil
-                    end
-                    if @mounted
-                      if ![:defined, :present].include?(ensure_setting)
-                        @current_options.should == @desired_options
-                      elsif initial_fstab_entry
-                        @current_options.should == @desired_options
+                      if options_setting && options_setting.empty?
+                        expect { run_in_catalog(:ensure=>ensure_setting, :options => options_setting) }.to raise_error Puppet::ResourceError
                       else
-                        @current_options.should == 'local' #Workaround for #6645
+                        if options_setting
+                          @desired_options = options_setting
+                          run_in_catalog(:ensure=>ensure_setting, :options => options_setting)
+                        else
+                          if initial_fstab_entry
+                            @desired_options = @current_options
+                          else
+                            @desired_options = 'defaults'
+                          end
+                          run_in_catalog(:ensure=>ensure_setting)
+                        end
+                        expect(@mounted).to eq(expected_final_state)
+                        if expected_fstab_data
+                          expect(check_fstab(expected_fstab_data)).to eq("/dev/disk1s1")
+                        else
+                          expect(check_fstab(expected_fstab_data)).to eq(nil)
+                        end
                       end
                     end
                   end
@@ -147,10 +152,10 @@ describe "mount provider (integration)", :unless => Puppet.features.microsoft_wi
       create_fake_fstab(true)
       @desired_options = "local"
       run_in_catalog(:ensure=>:mounted, :options=>'local')
-      @current_device.should=="/dev/disk1s1"
-      @mounted.should==true
-      @current_options.should=='local'
-      check_fstab(true).should == "/dev/disk1s1"
+      expect(@current_device).to eq("/dev/disk1s1")
+      expect(@mounted).to eq(true)
+      expect(@current_options).to eq('local')
+      expect(check_fstab(true)).to eq("/dev/disk1s1")
     end
   end
 end

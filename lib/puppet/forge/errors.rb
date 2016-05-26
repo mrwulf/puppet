@@ -1,4 +1,6 @@
+require 'json'
 require 'puppet/error'
+require 'puppet/forge'
 
 # Puppet::Forge specific exceptions
 module Puppet::Forge::Errors
@@ -75,12 +77,19 @@ Could not connect to #{@uri}
     # @option options [Net::HTTPResponse] :response The original HTTP response
     def initialize(options)
       @uri     = options[:uri]
-      @input   = options[:input]
       @message = options[:message]
       response = options[:response]
       @response = "#{response.code} #{response.message.strip}"
 
-      message = "Could not execute operation for '#{@input}'. Detail: "
+      begin
+        body = JSON.parse(response.body)
+        if body['message']
+          @message ||= body['message'].strip
+        end
+      rescue JSON::ParserError
+      end
+
+      message = "Request to Puppet Forge failed. Detail: "
       message << @message << " / " if @message
       message << @response << "."
       super(message, original)
@@ -90,13 +99,13 @@ Could not connect to #{@uri}
     #
     # @return [String] the multiline version of the error message
     def multiline
-      message = <<-EOS
-Could not execute operation for '#{@input}'
+      message = <<-EOS.chomp
+Request to Puppet Forge failed.
   The server being queried was #{@uri}
   The HTTP response we received was '#{@response}'
       EOS
-      message << "  The message we received said '#{@message}'\n" if @message
-      message << "    Check the author and module names are correct."
+      message << "\n  The message we received said '#{@message}'" if @message
+      message
     end
   end
 

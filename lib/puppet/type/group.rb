@@ -4,7 +4,7 @@ require 'puppet/property/keyvalue'
 require 'puppet/parameter/boolean'
 
 module Puppet
-  newtype(:group) do
+  Type.newtype(:group) do
     @doc = "Manage groups. On most platforms this can only create groups.
       Group membership must be managed on individual users.
 
@@ -80,18 +80,48 @@ module Puppet
 
     newproperty(:members, :array_matching => :all, :required_features => :manages_members) do
       desc "The members of the group. For directory services where group
-      membership is stored in the group objects, not the users."
+      membership is stored in the group objects, not the users. Use
+      with auth_membership to determine whether the specified members
+      are inclusive or the minimum."
 
       def change_to_s(currentvalue, newvalue)
         currentvalue = currentvalue.join(",") if currentvalue != :absent
         newvalue = newvalue.join(",")
         super(currentvalue, newvalue)
       end
+
+      def insync?(current)
+        if provider.respond_to?(:members_insync?)
+          return provider.members_insync?(current, @should)
+        end
+
+        super(current)
+      end
+
+      def is_to_s(currentvalue)
+        if provider.respond_to?(:members_to_s)
+          currentvalue = '' if currentvalue.nil?
+          currentvalue = currentvalue.is_a?(Array) ? currentvalue : currentvalue.split(',')
+
+          return provider.members_to_s(currentvalue)
+        end
+
+        super(currentvalue)
+      end
+      alias :should_to_s :is_to_s
+
+      validate do |value|
+        if provider.respond_to?(:member_valid?)
+          return provider.member_valid?(value)
+        end
+      end
     end
 
-    newparam(:auth_membership) do
-      desc "whether the provider is authoritative for group membership."
-      defaultto true
+    newparam(:auth_membership, :boolean => true, :parent => Puppet::Parameter::Boolean) do
+      desc "Whether the provider is authoritative for group membership. This
+        must be set to true to allow setting the group to no members with
+        `members => [],`."
+      defaultto false
     end
 
     newparam(:name) do
@@ -150,7 +180,7 @@ module Puppet
     newparam(:forcelocal, :boolean => true,
              :required_features => :libuser,
              :parent => Puppet::Parameter::Boolean) do
-      desc "Forces the mangement of local accounts when accounts are also
+      desc "Forces the management of local accounts when accounts are also
             being managed by some other NSS"
       defaultto false
     end

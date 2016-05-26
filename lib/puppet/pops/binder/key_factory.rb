@@ -1,13 +1,9 @@
+module Puppet::Pops
+module Binder
 # The KeyFactory is responsible for creating keys used for lookup of bindings.
 # @api public
 #
-class Puppet::Pops::Binder::KeyFactory
-
-  attr_reader :type_calculator
-  # @api public
-  def initialize(type_calculator = Puppet::Pops::Types::TypeCalculator.new())
-    @type_calculator = type_calculator
-  end
+class KeyFactory
 
   # @api public
   def binding_key(binding)
@@ -16,12 +12,12 @@ class Puppet::Pops::Binder::KeyFactory
 
   # @api public
   def named_key(type, name)
-    [(@type_calculator.assignable?(@type_calculator.data, type) ? @type_calculator.data : type), name]
+    [(Types::PDataType::DEFAULT.assignable?(type) ? Types::PDataType::DEFAULT : type), name]
   end
 
   # @api public
   def data_key(name)
-    [@type_calculator.data, name]
+    [Types::PDataType::DEFAULT, name]
   end
 
   # @api public
@@ -36,19 +32,25 @@ class Puppet::Pops::Binder::KeyFactory
   end
 
   # @api public
+  def multibind_contribution_key_to_id(contributions_key)
+    # removes the leading "mc_" from the key to get the multibind_id
+    contributions_key[3..-1]
+  end
+
+  # @api public
   def is_named?(key)
     key.is_a?(Array) && key[1] && !key[1].empty?
   end
 
   # @api public
   def is_data?(key)
-    return false unless key.is_a?(Array) && key[0].is_a?(Puppet::Pops::Types::PObjectType)
-    type_calculator.assignable?(type_calculator.data(), key[0])
+    return false unless key.is_a?(Array) && key[0].is_a?(Types::PAnyType)
+    Types::PDataType::DEFAULT.assignable?(key[0])
   end
 
   # @api public
   def is_ruby?(key)
-    return key.is_a?(Array) && key[0].is_a?(Puppet::Pops::Types::PRubyType)
+    key.is_a?(Array) && key[0].is_a?(Types::PRuntimeType) && key[0].runtime == :ruby
   end
 
   # Returns the type of the key
@@ -58,4 +60,6 @@ class Puppet::Pops::Binder::KeyFactory
     return nil unless key.is_a?(Array)
     key[0]
   end
+end
+end
 end

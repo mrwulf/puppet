@@ -1,6 +1,6 @@
 require 'puppet/util/logging'
 require 'semver'
-require 'puppet/module_tool/applications'
+require 'json'
 
 # Support for modules
 class Puppet::Module
@@ -20,6 +20,7 @@ class Puppet::Module
     "files" => "files",
     "templates" => "templates",
     "plugins" => "lib",
+    "pluginfacts" => "facts.d",
   }
 
   # Find and return the +module+ that +path+ belongs to. If +path+ is
@@ -27,14 +28,35 @@ class Puppet::Module
   # of +path+, return +nil+
   def self.find(modname, environment = nil)
     return nil unless modname
-    Puppet::Node::Environment.new(environment).module(modname)
+    # Unless a specific environment is given, use the current environment
+    env = environment ? Puppet.lookup(:environments).get!(environment) : Puppet.lookup(:current_environment)
+    env.module(modname)
   end
 
-  attr_reader :name, :environment, :path
+  def self.is_module_directory?(name, path)
+    # it must be a directory
+    fullpath = File.join(path, name)
+    return false unless Puppet::FileSystem.directory?(fullpath)
+    return is_module_directory_name?(name)
+  end
+
+  def self.is_module_directory_name?(name)
+    # it must match an installed module name according to forge validator
+    return true if name =~ /^[a-z][a-z0-9_]*$/
+    return false
+  end
+
+  def self.is_module_namespaced_name?(name)
+    # it must match the full module name according to forge validator
+    return true if name =~ /^[a-zA-Z0-9]+[-][a-z][a-z0-9_]*$/
+    return false
+  end
+
+  attr_reader :name, :environment, :path, :metadata
   attr_writer :environment
 
   attr_accessor :dependencies, :forge_name
-  attr_accessor :source, :author, :version, :license, :puppetversion, :summary, :description, :project_page
+  attr_accessor :source, :author, :version, :license, :summary, :description, :project_page
 
   def initialize(name, path, environment)
     @name = name
@@ -45,18 +67,34 @@ class Puppet::Module
 
     load_metadata if has_metadata?
 
-    validate_puppet_version
-
     @absolute_path_to_manifests = Puppet::FileSystem::PathPattern.absolute(manifests)
+  end
+
+  # @deprecated The puppetversion module metadata field is no longer used.
+  def puppetversion
+    nil
+  end
+
+  # @deprecated The puppetversion module metadata field is no longer used.
+  def puppetversion=(something)
+  end
+
+  # @deprecated The puppetversion module metadata field is no longer used.
+  def validate_puppet_version
+    return
   end
 
   def has_metadata?
     return false unless metadata_file
 
-    return false unless FileTest.exist?(metadata_file)
+    return false unless Puppet::FileSystem.exist?(metadata_file)
 
-    metadata = PSON.parse File.read(metadata_file)
-
+    begin
+      metadata =  JSON.parse(File.read(metadata_file, :encoding => 'utf-8'))
+    rescue JSON::JSONError => e
+      Puppet.debug("#{name} has an invalid and unparsable metadata.json file.  The parse error: #{e.message}")
+      return false
+    end
 
     return metadata.is_a?(Hash) && !metadata.keys.empty?
   end
@@ -66,7 +104,7 @@ class Puppet::Module
     # we have files of a given type.
     define_method(type +'?') do
       type_subpath = subpath(location)
-      unless FileTest.exist?(type_subpath)
+      unless Puppet::FileSystem.exist?(type_subpath)
         Puppet.debug("No #{type} found in subpath '#{type_subpath}' " +
                          "(file / directory does not exist)")
         return false
@@ -89,7 +127,7 @@ class Puppet::Module
         full_path = subpath(location)
       end
 
-      return nil unless FileTest.exist?(full_path)
+      return nil unless Puppet::FileSystem.exist?(full_path)
       return full_path
     end
 
@@ -107,24 +145,22 @@ class Puppet::Module
   end
 
   def load_metadata
-    data = PSON.parse File.read(metadata_file)
+    @metadata = data = JSON.parse(File.read(metadata_file, :encoding => 'utf-8'))
     @forge_name = data['name'].gsub('-', '/') if data['name']
 
-    [:source, :author, :version, :license, :puppetversion, :dependencies].each do |attr|
+    [:source, :author, :version, :license, :dependencies].each do |attr|
       unless value = data[attr.to_s]
-        unless attr == :puppetversion
-          raise MissingMetadata, "No #{attr} module metadata provided for #{self.name}"
-        end
+        raise MissingMetadata, "No #{attr} module metadata provided for #{self.name}"
       end
 
-      # NOTICE: The fallback to `versionRequirement` is something we'd like to
-      # not have to support, but we have a reasonable number of releases that
-      # don't use `version_requirement`. When we can deprecate this, we should.
       if attr == :dependencies
-        value.tap do |dependencies|
-          dependencies.each do |dep|
-            dep['version_requirement'] ||= dep['versionRequirement'] || '>= 0.0.0'
-          end
+        unless value.is_a?(Array)
+          raise MissingMetadata, "The value for the key dependencies in the file metadata.json of the module #{self.name} must be an array, not: '#{value}'"
+        end
+        value.each do |dep|
+          name = dep['name']
+          dep['name'] = name.tr('-', '/') unless name.nil?
+          dep['version_requirement'] ||= '>= 0.0.0'
         end
       end
 
@@ -133,7 +169,7 @@ class Puppet::Module
   end
 
   # Return the list of manifests matching the given glob pattern,
-  # defaulting to 'init.{pp,rb}' for empty modules.
+  # defaulting to 'init.pp' for empty modules.
   def match_manifests(rest)
     if rest
       wanted_manifests = wanted_manifests_from(rest)
@@ -143,14 +179,17 @@ class Puppet::Module
     end
 
     # (#4220) Always ensure init.pp in case class is defined there.
-    init_manifests = [manifest("init.pp"), manifest("init.rb")].compact
-    init_manifests + searched_manifests
+    init_manifest = manifest("init.pp")
+    if !init_manifest.nil? && !searched_manifests.include?(init_manifest)
+      searched_manifests.unshift(init_manifest)
+    end
+    searched_manifests
   end
 
   def all_manifests
-    return [] unless File.exists?(manifests)
+    return [] unless Puppet::FileSystem.exist?(manifests)
 
-    Dir.glob(File.join(manifests, '**', '*.{rb,pp}'))
+    Dir.glob(File.join(manifests, '**', '*.pp'))
   end
 
   def metadata_file
@@ -167,6 +206,14 @@ class Puppet::Module
   # Find all plugin directories.  This is used by the Plugins fileserving mount.
   def plugin_directory
     subpath("lib")
+  end
+
+  def plugin_fact_directory
+    subpath("facts.d")
+  end
+
+  def has_external_facts?
+    File.directory?(plugin_fact_directory)
   end
 
   def supports(name, version = nil)
@@ -193,15 +240,6 @@ class Puppet::Module
 
   def required_by
     environment.module_requirements[self.forge_name] || {}
-  end
-
-  def has_local_changes?
-    changes = Puppet::ModuleTool::Applications::Checksummer.run(path)
-    !changes.empty?
-  end
-
-  def local_changes
-    Puppet::ModuleTool::Applications::Checksummer.run(path)
   end
 
   # Identify and mark unmet dependencies.  A dependency will be marked unmet
@@ -235,17 +273,17 @@ class Puppet::Module
     return unmet_dependencies unless dependencies
 
     dependencies.each do |dependency|
-      forge_name = dependency['name']
+      name = dependency['name']
       version_string = dependency['version_requirement'] || '>= 0.0.0'
 
       dep_mod = begin
-        environment.module_by_forge_name(forge_name)
+        environment.module_by_forge_name(name)
       rescue
         nil
       end
 
       error_details = {
-        :name => forge_name,
+        :name => name,
         :version_constraint => version_string.gsub(/^(?=\d)/, "v"),
         :parent => {
           :name => self.forge_name,
@@ -283,16 +321,18 @@ class Puppet::Module
     unmet_dependencies
   end
 
-  def validate_puppet_version
-    return unless puppetversion and puppetversion != Puppet.version
-    raise IncompatibleModule, "Module #{self.name} is only compatible with Puppet version #{puppetversion}, not #{Puppet.version}"
+  def ==(other)
+    self.name == other.name &&
+    self.version == other.version &&
+    self.path == other.path &&
+    self.environment == other.environment
   end
 
   private
 
   def wanted_manifests_from(pattern)
     begin
-      extended = File.extname(pattern).empty? ? "#{pattern}.{pp,rb}" : pattern
+      extended = File.extname(pattern).empty? ? "#{pattern}.pp" : pattern
       relative_pattern = Puppet::FileSystem::PathPattern.relative(extended)
     rescue Puppet::FileSystem::PathPattern::InvalidPattern => error
       raise Puppet::Module::InvalidFilePattern.new(
@@ -308,13 +348,8 @@ class Puppet::Module
   end
 
   def assert_validity
-    raise InvalidName, "Invalid module name #{name}; module names must be alphanumeric (plus '-'), not '#{name}'" unless name =~ /^[-\w]+$/
-  end
-
-  def ==(other)
-    self.name == other.name &&
-    self.version == other.version &&
-    self.path == other.path &&
-    self.environment == other.environment
+    if !Puppet::Module.is_module_directory_name?(@name) && !Puppet::Module.is_module_namespaced_name?(@name)
+      raise InvalidName, "Invalid module name #{@name}; module names must be alphanumeric (plus '-'), not '#{@name}'"
+    end
   end
 end

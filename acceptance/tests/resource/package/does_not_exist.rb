@@ -5,9 +5,6 @@ test_name "Puppet returns only resource package declaration when querying an uni
   ensure => '(?:purged|absent)',
 \}@m
 
-  package_apply_regex = %r@Notice: Compiled catalog for [\w-]+.delivery.puppetlabs.net in environment production in \d+\.\d{2} seconds(?:\e\[0m)?
-(?:\e\[m)?Notice: Finished catalog run in \d+\.\d{2} seconds@m
-
   agents.each do |agent|
 
     step "test puppet resource package" do
@@ -20,12 +17,11 @@ test_name "Puppet returns only resource package declaration when querying an uni
 
   # Until #3707 is fixed and purged rpm/yum packages no longer give spurious creation notices
   # Also skipping solaris, windows whose providers do not have purgeable implemented.
-  confine(:to, :platform => /debian|ubuntu/) do
+  confine_block(:to, :platform => /debian|ubuntu/) do
     agents.each do |agent|
       step "test puppet apply" do
         on(agent, puppet('apply', '-e', %Q|"package {'not-installed-on-this-host': ensure => purged }"|)) do
-          assert_match(package_apply_regex, stdout)
-          assert_equal('', stderr)
+          assert_no_match(/warning/i, stdout)
         end
       end
     end

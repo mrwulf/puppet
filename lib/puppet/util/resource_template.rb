@@ -40,11 +40,11 @@ class Puppet::Util::ResourceTemplate
 
   def evaluate
     set_resource_variables
-    ERB.new(File.read(@file), 0, "-").result(binding)
+    ERB.new(Puppet::FileSystem.read(@file, :encoding => 'utf-8'), 0, "-").result(binding)
   end
 
   def initialize(file, resource)
-    raise ArgumentError, "Template #{file} does not exist" unless FileTest.exist?(file)
+    raise ArgumentError, "Template #{file} does not exist" unless Puppet::FileSystem.exist?(file)
     @file = file
     @resource = resource
   end

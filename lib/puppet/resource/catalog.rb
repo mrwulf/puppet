@@ -1,9 +1,11 @@
 require 'puppet/node'
 require 'puppet/indirector'
 require 'puppet/transaction'
-require 'puppet/util/pson'
 require 'puppet/util/tagging'
 require 'puppet/graph'
+require 'securerandom'
+
+require 'puppet/resource/capability_finder'
 
 # This class models a node catalog.  It is the thing meant to be passed
 # from server to client, and it contains all of the information in the
@@ -20,7 +22,6 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
   indirects :catalog, :terminus_setting => :catalog_terminus
 
   include Puppet::Util::Tagging
-  extend Puppet::Util::Pson
 
   # The host name this is a catalog for.
   attr_accessor :name
@@ -28,6 +29,25 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
   # The catalog version.  Used for testing whether a catalog
   # is up to date.
   attr_accessor :version
+
+  # The id of the code input to the compiler.
+  attr_accessor :code_id
+
+  # The UUID of the catalog
+  attr_accessor :catalog_uuid
+
+  # @return [Integer] catalog format version number. This value is constant
+  #  for a given version of Puppet; it is incremented when a new release of
+  #  Puppet changes the API for the various objects that make up the catalog.
+  attr_accessor :catalog_format
+
+  # Inlined file metadata for non-recursive find
+  # A hash of title => metadata
+  attr_accessor :metadata
+
+  # Inlined file metadata for recursive search
+  # A hash of title => { source => [metadata, ...] }
+  attr_accessor :recursive_metadata
 
   # How long this catalog took to retrieve.  Used for reporting stats.
   attr_accessor :retrieval_duration
@@ -46,8 +66,11 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
   # Some metadata to help us compile and generally respond to the current state.
   attr_accessor :client_version, :server_version
 
-  # The environment for this catalog
+  # A String representing the environment for this catalog
   attr_accessor :environment
+
+  # The actual environment instance that was used during compilation
+  attr_accessor :environment_instance
 
   # Add classes to our class list.
   def add_class(*classes)
@@ -60,8 +83,35 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
   end
 
   def title_key_for_ref( ref )
-    ref =~ /^([-\w:]+)\[(.*)\]$/m
-    [$1, $2]
+    s = ref.index('[')
+    e = ref.rindex(']')
+    if s && e && e > s
+      a = [ref[0, s], ref[s+1, e-s-1]]
+    else
+      a = [nil, nil]
+    end
+    return a
+  end
+
+  def add_resource_before(other, *resources)
+    resources.each do |resource|
+      other_title_key = title_key_for_ref(other.ref)
+      idx = @resources.index(other_title_key)
+      raise ArgumentError, "Cannot add resource #{resource.ref} before #{other.ref} because #{other.ref} is not yet in the catalog" if idx.nil?
+      add_one_resource(resource, idx)
+    end
+  end
+
+  # Add `resources` to the catalog after `other`. WARNING: adding
+  # multiple resources will produce the reverse ordering, e.g. calling
+  # `add_resource_after(A, [B,C])` will result in `[A,C,B]`.
+  def add_resource_after(other, *resources)
+    resources.each do |resource|
+      other_title_key = title_key_for_ref(other.ref)
+      idx = @resources.index(other_title_key)
+      raise ArgumentError, "Cannot add resource #{resource.ref} after #{other.ref} because #{other.ref} is not yet in the catalog" if idx.nil?
+      add_one_resource(resource, idx+1)
+    end
   end
 
   def add_resource(*resources)
@@ -77,10 +127,13 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
     adjacent(resource, :direction => :in)[0]
   end
 
-  def add_one_resource(resource)
-    fail_on_duplicate_type_and_title(resource)
+  def add_one_resource(resource, idx=-1)
+    title_key = title_key_for_ref(resource.ref)
+    if @resource_table[title_key]
+      fail_on_duplicate_type_and_title(resource, title_key)
+    end
 
-    add_resource_to_table(resource)
+    add_resource_to_table(resource, title_key, idx)
     create_resource_aliases(resource)
 
     resource.catalog = self if resource.respond_to?(:catalog=)
@@ -88,10 +141,9 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
   end
   private :add_one_resource
 
-  def add_resource_to_table(resource)
-    title_key = title_key_for_ref(resource.ref)
+  def add_resource_to_table(resource, title_key, idx)
     @resource_table[title_key] = resource
-    @resources << title_key
+    @resources.insert(idx, title_key)
   end
   private :add_resource_to_table
 
@@ -102,22 +154,28 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
   private :add_resource_to_graph
 
   def create_resource_aliases(resource)
-    if resource.respond_to?(:isomorphic?) and resource.isomorphic? and resource.name != resource.title
-      self.alias(resource, resource.uniqueness_key)
+    # Skip creating aliases and checking collisions for non-isomorphic resources.
+    return unless resource.respond_to?(:isomorphic?) and resource.isomorphic?
+
+    # Add an alias if the uniqueness key is valid and not the title, which has already been checked.
+    ukey = resource.uniqueness_key
+    if ukey.any? and ukey != [resource.title]
+      self.alias(resource, ukey)
     end
   end
   private :create_resource_aliases
 
   # Create an alias for a resource.
   def alias(resource, key)
-    resource.ref =~ /^(.+)\[/
+    ref = resource.ref
+    ref =~ /^(.+)\[/
     class_name = $1 || resource.class.name
 
     newref = [class_name, key].flatten
 
     if key.is_a? String
       ref_string = "#{class_name}[#{key}]"
-      return if ref_string == resource.ref
+      return if ref_string == ref
     end
 
     # LAK:NOTE It's important that we directly compare the references,
@@ -128,12 +186,12 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
       return if existing == resource
       resource_declaration = " at #{resource.file}:#{resource.line}" if resource.file and resource.line
       existing_declaration = " at #{existing.file}:#{existing.line}" if existing.file and existing.line
-      msg = "Cannot alias #{resource.ref} to #{key.inspect}#{resource_declaration}; resource #{newref.inspect} already declared#{existing_declaration}"
+      msg = "Cannot alias #{ref} to #{key.inspect}#{resource_declaration}; resource #{newref.inspect} already declared#{existing_declaration}"
       raise ArgumentError, msg
     end
     @resource_table[newref] = resource
-    @aliases[resource.ref] ||= []
-    @aliases[resource.ref] << newref
+    @aliases[ref] ||= []
+    @aliases[ref] << newref
   end
 
   # Apply our catalog to the local host.
@@ -163,10 +221,6 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
       transaction.report.as_logging_destination do
         transaction.evaluate
       end
-    rescue Puppet::Error => detail
-      Puppet.log_exception(detail, "Could not apply complete catalog: #{detail}")
-    rescue => detail
-      Puppet.log_exception(detail, "Got an uncaught exception of type #{detail.class}: #{detail}")
     ensure
       # Don't try to store state unless we're a host config
       # too recursive.
@@ -181,11 +235,14 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
   # The relationship_graph form of the catalog. This contains all of the
   # dependency edges that are used for determining order.
   #
+  # @param given_prioritizer [Puppet::Graph::Prioritizer] The prioritization
+  #   strategy to use when constructing the relationship graph. Defaults the
+  #   being determined by the `ordering` setting.
   # @return [Puppet::Graph::RelationshipGraph]
   # @api public
-  def relationship_graph
+  def relationship_graph(given_prioritizer = nil)
     if @relationship_graph.nil?
-      @relationship_graph = Puppet::Graph::RelationshipGraph.new(prioritizer)
+      @relationship_graph = Puppet::Graph::RelationshipGraph.new(given_prioritizer || prioritizer)
       @relationship_graph.populate_from(self)
     end
     @relationship_graph
@@ -232,15 +289,22 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
     host_config
   end
 
-  def initialize(name = nil)
+  def initialize(name = nil, environment = Puppet::Node::Environment::NONE, code_id = nil)
     super()
-    @name = name if name
+    @name = name
+    @catalog_uuid = SecureRandom.uuid
+    @catalog_format = 1
+    @metadata = {}
+    @recursive_metadata = {}
     @classes = []
     @resource_table = {}
     @resources = []
     @relationship_graph = nil
 
     @host_config = true
+    @environment_instance = environment
+    @environment = environment.to_s
+    @code_id = code_id
 
     @aliases = {}
 
@@ -269,34 +333,46 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
   # references to the resource instances.
   def remove_resource(*resources)
     resources.each do |resource|
-      title_key = title_key_for_ref(resource.ref)
+      ref = resource.ref
+      title_key = title_key_for_ref(ref)
       @resource_table.delete(title_key)
-      if aliases = @aliases[resource.ref]
+      if aliases = @aliases[ref]
         aliases.each { |res_alias| @resource_table.delete(res_alias) }
-        @aliases.delete(resource.ref)
+        @aliases.delete(ref)
       end
       remove_vertex!(resource) if vertex?(resource)
       @relationship_graph.remove_vertex!(resource) if @relationship_graph and @relationship_graph.vertex?(resource)
       @resources.delete(title_key)
-      resource.remove
+      # Only Puppet::Type kind of resources respond to :remove, not Puppet::Resource
+      resource.remove if resource.respond_to?(:remove)
     end
   end
 
   # Look a resource up by its reference (e.g., File[/etc/passwd]).
   def resource(type, title = nil)
-    # Always create a resource reference, so that it always
-    # canonicalizes how we are referring to them.
-    if title
-      res = Puppet::Resource.new(type, title)
-    else
-      # If they didn't provide a title, then we expect the first
-      # argument to be of the form 'Class[name]', which our
-      # Reference class canonicalizes for us.
-      res = Puppet::Resource.new(nil, type)
+    type, title = Puppet::Resource.type_and_title(type, title)
+    title_key   = [type, title.to_s]
+    result = @resource_table[title_key]
+    if result.nil?
+      # an instance has to be created in order to construct the unique key used when
+      # searching for aliases.
+      unless @aliases.empty? && !Puppet[:app_management]
+        res = Puppet::Resource.new(type, title, { :environment => @environment_instance })
+        result = @resource_table[[type, res.uniqueness_key].flatten]
+      end
+
+      if result.nil? && Puppet[:app_management]
+        resource_type = res.resource_type
+        if resource_type && resource_type.is_capability?
+          # @todo lutter 2015-03-10: this assumes that it is legal to just
+          # mention a capability resource in code and have it automatically
+          # made available, even if the current component does not require it
+          result = Puppet::Resource::CapabilityFinder.find(environment, code_id, res)
+          add_resource(result) if result
+        end
+      end
     end
-    title_key      = [res.type, res.title.to_s]
-    uniqueness_key = [res.type, res.uniqueness_key].flatten
-    @resource_table[title_key] || @resource_table[uniqueness_key]
+    result
   end
 
   def resource_refs
@@ -313,8 +389,8 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
     end
   end
 
-  def self.from_pson(data)
-    result = new(data['name'])
+  def self.from_data_hash(data)
+    result = new(data['name'], Puppet::Node::Environment::NONE)
 
     if tags = data['tags']
       result.tag(*tags)
@@ -324,20 +400,41 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
       result.version = version
     end
 
+    if code_id = data['code_id']
+      result.code_id = code_id
+    end
+
+    if catalog_uuid = data['catalog_uuid']
+      result.catalog_uuid = catalog_uuid
+    end
+
+    result.catalog_format = data['catalog_format'] || 0
+
     if environment = data['environment']
       result.environment = environment
+      result.environment_instance = Puppet::Node::Environment.remote(environment.to_sym)
     end
 
     if resources = data['resources']
       result.add_resource(*resources.collect do |res|
-        Puppet::Resource.from_pson(res)
+        Puppet::Resource.from_data_hash(res)
       end)
     end
 
     if edges = data['edges']
-      edges = PSON.parse(edges) if edges.is_a?(String)
-      edges.each do |edge|
-        edge_from_pson(result, edge)
+      edges.each do |edge_hash|
+        edge = Puppet::Relationship.from_data_hash(edge_hash)
+        unless source = result.resource(edge.source)
+          raise ArgumentError, "Could not intern from data: Could not find relationship source #{edge.source.inspect} for #{edge.target.to_s}"
+        end
+        edge.source = source
+
+        unless target = result.resource(edge.target)
+          raise ArgumentError, "Could not intern from data: Could not find relationship target #{edge.target.inspect} for #{edge.source.to_s}"
+        end
+        edge.target = target
+
+        result.add_edge(edge)
       end
     end
 
@@ -345,47 +442,46 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
       result.add_class(*classes)
     end
 
+    if metadata = data['metadata']
+      result.metadata = metadata.inject({}) { |h, (k, v)| h[k] = Puppet::FileServing::Metadata.from_data_hash(v); h }
+    end
+
+    if recursive_metadata = data['recursive_metadata']
+      result.recursive_metadata = recursive_metadata.inject({}) do |h, (title, source_to_meta_hash)|
+        h[title] = source_to_meta_hash.inject({}) do |inner_h, (source, metas)|
+          inner_h[source] = metas.map {|meta| Puppet::FileServing::Metadata.from_data_hash(meta)}
+          inner_h
+        end
+        h
+      end
+    end
+
     result
   end
 
-  def self.edge_from_pson(result, edge)
-    # If no type information was presented, we manually find
-    # the class.
-    edge = Puppet::Relationship.from_pson(edge) if edge.is_a?(Hash)
-    unless source = result.resource(edge.source)
-      raise ArgumentError, "Could not convert from pson: Could not find relationship source #{edge.source.inspect}"
+  def to_data_hash
+    metadata_hash = metadata.inject({}) { |h, (k, v)| h[k] = v.to_data_hash; h }
+    recursive_metadata_hash = recursive_metadata.inject({}) do |h, (title, source_to_meta_hash)|
+      h[title] = source_to_meta_hash.inject({}) do |inner_h, (source, metas)|
+        inner_h[source] = metas.map {|meta| meta.to_data_hash}
+        inner_h
+      end
+      h
     end
-    edge.source = source
 
-    unless target = result.resource(edge.target)
-      raise ArgumentError, "Could not convert from pson: Could not find relationship target #{edge.target.inspect}"
-    end
-    edge.target = target
-
-    result.add_edge(edge)
-  end
-
-  PSON.register_document_type('Catalog',self)
-  def to_pson_data_hash
     {
-      'document_type' => 'Catalog',
-      'data'       => {
-        'tags'      => tags,
-        'name'      => name,
-        'version'   => version,
-        'environment' => environment.to_s,
-        'resources' => @resources.collect { |v| @resource_table[v].to_pson_data_hash },
-        'edges'     => edges.   collect { |e| e.to_pson_data_hash },
-        'classes'   => classes
-        },
-      'metadata' => {
-        'api_version' => 1
-        }
-    }
-  end
-
-  def to_pson(*args)
-    to_pson_data_hash.to_pson(*args)
+      'tags'      => tags,
+      'name'      => name,
+      'version'   => version,
+      'code_id'   => code_id,
+      'catalog_uuid' => catalog_uuid,
+      'catalog_format' => catalog_format,
+      'environment'  => environment.to_s,
+      'resources' => @resources.collect { |v| @resource_table[v].to_data_hash },
+      'edges'     => edges.   collect { |e| e.to_data_hash },
+      'classes'   => classes,
+    }.merge(metadata_hash.empty? ? {} : {'metadata' => metadata_hash})
+     .merge(recursive_metadata_hash.empty? ? {} : {'recursive_metadata' => recursive_metadata_hash})
   end
 
   # Convert our catalog into a RAL catalog.
@@ -402,7 +498,18 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
   # If the block result is false, the resource will
   # be kept otherwise it will be skipped
   def filter(&block)
-    to_catalog :to_resource, &block
+    # to_catalog must take place in a context where current_environment is set to the same env as the
+    # environment set in the catalog (if it is set)
+    # See PUP-3755
+    if environment_instance
+      Puppet.override({:current_environment => environment_instance}) do
+        to_catalog :to_resource, &block
+      end
+    else
+      # If catalog has no environment_instance, hope that the caller has made sure the context has the
+      # correct current_environment
+      to_catalog :to_resource, &block
+    end
   end
 
   # Store the classes in the classfile.
@@ -464,9 +571,9 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
   end
 
   # Verify that the given resource isn't declared elsewhere.
-  def fail_on_duplicate_type_and_title(resource)
-    # Short-curcuit the common case,
-    return unless existing_resource = @resource_table[title_key_for_ref(resource.ref)]
+  def fail_on_duplicate_type_and_title(resource, title_key)
+    # Short-circuit the common case,
+    return unless existing_resource = @resource_table[title_key]
 
     # If we've gotten this far, it's a real conflict
     msg = "Duplicate declaration: #{resource.ref} is already declared"
@@ -482,32 +589,25 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
   # This pretty much just converts all of the resources from one class to another, using
   # a conversion method.
   def to_catalog(convert)
-    result = self.class.new(self.name)
+    result = self.class.new(self.name, self.environment_instance)
 
     result.version = self.version
-    result.environment = self.environment
+    result.code_id = self.code_id
+    result.catalog_uuid = self.catalog_uuid
+    result.catalog_format = self.catalog_format
+    result.metadata = self.metadata
+    result.recursive_metadata = self.recursive_metadata
 
     map = {}
     resources.each do |resource|
       next if virtual_not_exported?(resource)
       next if block_given? and yield resource
 
-      #This is hackity hack for 1094
-      #Aliases aren't working in the ral catalog because the current instance of the resource
-      #has a reference to the catalog being converted. . . So, give it a reference to the new one
-      #problem solved. . .
-      if resource.class == Puppet::Resource
-        resource = resource.dup
-        resource.catalog = result
-      elsif resource.is_a?(Puppet::Parser::Resource)
-        resource = resource.to_resource
-        resource.catalog = result
-      end
+      newres = resource.copy_as_resource
+      newres.catalog = result
 
-      if resource.is_a?(Puppet::Resource) and convert.to_s == "to_resource"
-        newres = resource
-      else
-        newres = resource.send(convert)
+      if convert != :to_resource
+        newres = newres.to_ral
       end
 
       # We can't guarantee that resources don't munge their names
@@ -547,6 +647,6 @@ class Puppet::Resource::Catalog < Puppet::Graph::SimpleGraph
   end
 
   def virtual_not_exported?(resource)
-    resource.respond_to?(:virtual?) and resource.virtual? and (resource.respond_to?(:exported?) and not resource.exported?)
+    resource.virtual && !resource.exported
   end
 end

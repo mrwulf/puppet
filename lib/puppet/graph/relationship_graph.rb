@@ -22,7 +22,7 @@ class Puppet::Graph::RelationshipGraph < Puppet::Graph::SimpleGraph
   def populate_from(catalog)
     add_all_resources_as_vertices(catalog)
     build_manual_dependencies
-    build_autorequire_dependencies(catalog)
+    build_autorelation_dependencies(catalog)
 
     write_graph(:relationships) if catalog.host_config?
 
@@ -126,9 +126,9 @@ class Puppet::Graph::RelationshipGraph < Puppet::Graph::SimpleGraph
         if made_progress
           enqueue(*deferred_resources)
         else
-          deferred_resources.each do |resource|
-            overly_deferred_resource_handler.call(resource)
-            finish(resource)
+          deferred_resources.each do |res|
+            overly_deferred_resource_handler.call(res)
+            finish(res)
           end
         end
 
@@ -163,39 +163,67 @@ class Puppet::Graph::RelationshipGraph < Puppet::Graph::SimpleGraph
     end
   end
 
-  def build_autorequire_dependencies(catalog)
+  def build_autorelation_dependencies(catalog)
     vertices.each do |vertex|
-      vertex.autorequire(catalog).each do |edge|
-        # don't let automatic relationships conflict with manual ones.
-        next if edge?(edge.source, edge.target)
+      [:require,:subscribe].each do |rel_type|
+        vertex.send("auto#{rel_type}".to_sym, catalog).each do |edge|
+          # don't let automatic relationships conflict with manual ones.
+          next if edge?(edge.source, edge.target)
 
-        if edge?(edge.target, edge.source)
-          vertex.debug "Skipping automatic relationship with #{edge.source}"
-        else
-          vertex.debug "Autorequiring #{edge.source}"
-          add_edge(edge)
+          if edge?(edge.target, edge.source)
+            vertex.debug "Skipping automatic relationship with #{edge.source}"
+          else
+            vertex.debug "Adding auto#{rel_type} relationship with #{edge.source}"
+            if rel_type == :require
+              edge.event = :NONE
+            else
+              edge.callback = :refresh
+              edge.event = :ALL_EVENTS
+            end
+            add_edge(edge)
+          end
+        end
+      end
+
+      [:before,:notify].each do |rel_type|
+        vertex.send("auto#{rel_type}".to_sym, catalog).each do |edge|
+          # don't let automatic relationships conflict with manual ones.
+          next if edge?(edge.target, edge.source)
+
+          if edge?(edge.source, edge.target)
+            vertex.debug "Skipping automatic relationship with #{edge.target}"
+          else
+            vertex.debug "Adding auto#{rel_type} relationship with #{edge.target}"
+            if rel_type == :before
+              edge.event = :NONE
+            else
+              edge.callback = :refresh
+              edge.event = :ALL_EVENTS
+            end
+            add_edge(edge)
+          end
         end
       end
     end
   end
 
   # Impose our container information on another graph by using it
-  # to replace any container vertices X with a pair of verticies
-  # { admissible_X and completed_X } such that that
+  # to replace any container vertices X with a pair of vertices
+  # { admissible_X and completed_X } such that
   #
   #    0) completed_X depends on admissible_X
   #    1) contents of X each depend on admissible_X
   #    2) completed_X depends on each on the contents of X
-  #    3) everything which depended on X depens on completed_X
+  #    3) everything which depended on X depends on completed_X
   #    4) admissible_X depends on everything X depended on
   #    5) the containers and their edges must be removed
   #
   # Note that this requires attention to the possible case of containers
   # which contain or depend on other containers, but has the advantage
   # that the number of new edges created scales linearly with the number
-  # of contained verticies regardless of how containers are related;
+  # of contained vertices regardless of how containers are related;
   # alternatives such as replacing container-edges with content-edges
-  # scale as the product of the number of external dependences, which is
+  # scale as the product of the number of external dependencies, which is
   # to say geometrically in the case of nested / chained containers.
   #
   Default_label = { :callback => :refresh, :event => :ALL_EVENTS }
@@ -207,8 +235,8 @@ class Puppet::Graph::RelationshipGraph < Puppet::Graph::SimpleGraph
     #
     # These two hashes comprise the aforementioned attention to the possible
     #   case of containers that contain / depend on other containers; they map
-    #   containers to their sentinels but pass other verticies through.  Thus we
-    #   can "do the right thing" for references to other verticies that may or
+    #   containers to their sentinels but pass other vertices through.  Thus we
+    #   can "do the right thing" for references to other vertices that may or
     #   may not be containers.
     #
     admissible = Hash.new { |h,k| k }

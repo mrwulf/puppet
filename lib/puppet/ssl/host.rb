@@ -4,6 +4,7 @@ require 'puppet/ssl/key'
 require 'puppet/ssl/certificate'
 require 'puppet/ssl/certificate_request'
 require 'puppet/ssl/certificate_revocation_list'
+require 'puppet/ssl/certificate_request_attributes'
 
 # The class that manages all aspects of our SSL certificates --
 # private keys, public keys, requests, etc.
@@ -117,10 +118,10 @@ DOC
     indirection.destroy(name)
   end
 
-  def self.from_pson(pson)
-    instance = new(pson["name"])
-    if pson["desired_state"]
-      instance.desired_state = pson["desired_state"]
+  def self.from_data_hash(data)
+    instance = new(data["name"])
+    if data["desired_state"]
+      instance.desired_state = data["desired_state"]
     end
     instance
   end
@@ -173,6 +174,12 @@ DOC
       end
     end
 
+    csr_attributes = Puppet::SSL::CertificateRequestAttributes.new(Puppet[:csr_attributes])
+    if csr_attributes.load
+      options[:csr_attributes] = csr_attributes.custom_attributes
+      options[:extension_requests] = csr_attributes.extension_requests
+    end
+
     @certificate_request = CertificateRequest.new(name)
     @certificate_request.generate(key.content, options)
     begin
@@ -191,7 +198,7 @@ DOC
 
       # get the CA cert first, since it's required for the normal cert
       # to be of any use.
-      return nil unless Certificate.indirection.find("ca") unless ca?
+      return nil unless Certificate.indirection.find("ca", :fail_on_404 => true) unless ca?
       return nil unless @certificate = Certificate.indirection.find(name)
 
       validate_certificate_with_key
@@ -210,8 +217,9 @@ To fix this, remove the certificate from both the master and the agent and then 
 On the master:
   puppet cert clean #{Puppet[:certname]}
 On the agent:
-  rm -f #{Puppet[:hostcert]}
-  puppet agent -t
+  1a. On most platforms: find #{Puppet[:ssldir]} -name #{Puppet[:certname]}.pem -delete
+  1b. On Windows: del "#{Puppet[:ssldir]}/#{Puppet[:certname]}.pem" /f
+  2. puppet agent -t
 ERROR_STRING
     end
   end
@@ -264,14 +272,14 @@ ERROR_STRING
     @ssl_store
   end
 
-  def to_pson(*args)
+  def to_data_hash
     my_cert = Puppet::SSL::Certificate.indirection.find(name)
-    pson_hash = { :name  => name }
+    result = { :name  => name }
 
     my_state = state
 
-    pson_hash[:state] = my_state
-    pson_hash[:desired_state] = desired_state if desired_state
+    result[:state] = my_state
+    result[:desired_state] = desired_state if desired_state
 
     thing_to_use = (my_state == 'requested') ? certificate_request : my_cert
 
@@ -280,7 +288,7 @@ ERROR_STRING
     # pson[:fingerprints][:default]
     # It appears that we have no internal consumers of this api
     # --jeffweiss 30 aug 2012
-    pson_hash[:fingerprint] = thing_to_use.fingerprint
+    result[:fingerprint] = thing_to_use.fingerprint
 
     # The above fingerprint doesn't tell us what message digest algorithm was used
     # No problem, except that the default is changing between 2.7 and 3.0. Also, as
@@ -289,15 +297,15 @@ ERROR_STRING
     # So, when we add the newer fingerprints, we're explicit about the hashing
     # algorithm used.
     # --jeffweiss 31 july 2012
-    pson_hash[:fingerprints] = {}
-    pson_hash[:fingerprints][:default] = thing_to_use.fingerprint
+    result[:fingerprints] = {}
+    result[:fingerprints][:default] = thing_to_use.fingerprint
 
     suitable_message_digest_algorithms.each do |md|
-      pson_hash[:fingerprints][md] = thing_to_use.fingerprint md
+      result[:fingerprints][md] = thing_to_use.fingerprint md
     end
-    pson_hash[:dns_alt_names] = thing_to_use.subject_alt_names
+    result[:dns_alt_names] = thing_to_use.subject_alt_names
 
-    pson_hash.to_pson(*args)
+    result
   end
 
   # eventually we'll probably want to move this somewhere else or make it
@@ -313,9 +321,7 @@ ERROR_STRING
       return if certificate
       generate
       return if certificate
-    rescue SystemExit,NoMemoryError
-      raise
-    rescue Exception => detail
+    rescue StandardError => detail
       Puppet.log_exception(detail, "Could not request certificate: #{detail.message}")
       if time < 1
         puts "Exiting; failed to retrieve certificate and waitforcert is disabled"

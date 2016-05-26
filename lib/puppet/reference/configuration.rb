@@ -1,4 +1,4 @@
-config = Puppet::Util::Reference.newreference(:configuration, :depth => 1, :doc => "A reference for all configuration parameters") do
+config = Puppet::Util::Reference.newreference(:configuration, :depth => 1, :doc => "A reference for all settings") do
   docs = {}
   Puppet.settings.each do |name, object|
     docs[name] = object
@@ -22,10 +22,16 @@ config = Puppet::Util::Reference.newreference(:configuration, :depth => 1, :doc 
 
     # Now print the data about the item.
     val = object.default
-    if name.to_s == "vardir"
-      val = "/var/lib/puppet"
-    elsif name.to_s == "confdir"
-      val = "/etc/puppet"
+    if name.to_s == 'vardir'
+      val = 'Unix/Linux: /opt/puppetlabs/puppet/cache -- Windows: C:\ProgramData\PuppetLabs\puppet\cache -- Non-root user: ~/.puppetlabs/opt/puppet/cache'
+    elsif name.to_s == 'confdir'
+      val = 'Unix/Linux: /etc/puppetlabs/puppet -- Windows: C:\ProgramData\PuppetLabs\puppet\etc -- Non-root user: ~/.puppetlabs/etc/puppet'
+    elsif name.to_s == 'codedir'
+      val = 'Unix/Linux: /etc/puppetlabs/code -- Windows: C:\ProgramData\PuppetLabs\code -- Non-root user: ~/.puppetlabs/etc/code'
+    elsif name.to_s == 'rundir'
+      val = 'Unix/Linux: /var/run/puppetlabs -- Windows: C:\ProgramData\PuppetLabs\puppet\var\run -- Non-root user: ~/.puppetlabs/var/run'
+    elsif name.to_s == 'logdir'
+      val = 'Unix/Linux: /var/log/puppetlabs/puppet -- Windows: C:\ProgramData\PuppetLabs\puppet\var\log -- Non-root user: ~/.puppetlabs/var/log'
     end
 
     # Leave out the section information; it was apparently confusing people.
@@ -45,7 +51,8 @@ config.header = <<EOT
 * Each of these settings can be specified in `puppet.conf` or on the
   command line.
 * When using boolean settings on the command line, use `--setting` and
-  `--no-setting` instead of `--setting (true|false)`.
+  `--no-setting` instead of `--setting (true|false)`. (Using `--setting false`
+  results in "Error: Could not parse application options: needless argument".)
 * Settings can be interpolated as `$variables` in other settings; `$environment`
   is special, in that puppet master will interpolate each agent node's
   environment instead of its own.
@@ -66,7 +73,7 @@ config.header = <<EOT
 
 See the [configuration guide][confguide] for more details.
 
-[confguide]: http://docs.puppetlabs.com/guides/configuring.html
+[confguide]: http://docs.puppetlabs.com/puppet/latest/reference/config_about_settings.html
 
 * * *
 

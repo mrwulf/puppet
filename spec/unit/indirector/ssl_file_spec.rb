@@ -40,12 +40,12 @@ describe Puppet::Indirector::SslFile do
 
   it "should return a nil collection directory if no directory setting has been provided" do
     @file_class.store_in nil
-    @file_class.collection_directory.should be_nil
+    expect(@file_class.collection_directory).to be_nil
   end
 
   it "should return a nil file location if no location has been provided" do
     @file_class.store_at nil
-    @file_class.file_location.should be_nil
+    expect(@file_class.file_location).to be_nil
   end
 
   it "should fail if no store directory or file location has been set" do
@@ -70,7 +70,7 @@ describe Puppet::Indirector::SslFile do
 
     it "should consider the file a ca file if the name is equal to what the SSL::Host class says is the CA name" do
       Puppet::SSL::Host.expects(:ca_name).returns "amaca"
-      @searcher.should be_ca("amaca")
+      expect(@searcher).to be_ca("amaca")
     end
 
     describe "when choosing the location for certificates" do
@@ -82,7 +82,7 @@ describe Puppet::Indirector::SslFile do
         Puppet[:cakey] = File.expand_path("/ca/file")
 
         @searcher.expects(:ca?).with(@cert.name).returns true
-        @searcher.path(@cert.name).should == Puppet[:cakey]
+        expect(@searcher.path(@cert.name)).to eq(Puppet[:cakey])
       end
 
       it "should set them at the file location if a file setting is available" do
@@ -91,11 +91,11 @@ describe Puppet::Indirector::SslFile do
 
         Puppet[:cacrl] = File.expand_path("/some/file")
 
-        @searcher.path(@cert.name).should == Puppet[:cacrl]
+        expect(@searcher.path(@cert.name)).to eq(Puppet[:cacrl])
       end
 
       it "should set them in the setting directory, with the certificate name plus '.pem', if a directory setting is available" do
-        @searcher.path(@cert.name).should == @certpath
+        expect(@searcher.path(@cert.name)).to eq(@certpath)
       end
 
       ['../foo', '..\\foo', './../foo', '.\\..\\foo',
@@ -108,7 +108,7 @@ describe Puppet::Indirector::SslFile do
        "//?/c:/foo",
       ].each do |input|
         it "should resist directory traversal attacks (#{input.inspect})" do
-          expect { @searcher.path(input) }.to raise_error
+          expect { @searcher.path(input) }.to raise_error(ArgumentError, /invalid key/)
         end
       end
 
@@ -121,11 +121,11 @@ describe Puppet::Indirector::SslFile do
     describe "when finding certificates on disk" do
       describe "and no certificate is present" do
         it "should return nil" do
-          FileTest.expects(:exist?).with(@path).returns(true)
+          Puppet::FileSystem.expects(:exist?).with(@path).returns(true)
           Dir.expects(:entries).with(@path).returns([])
-          FileTest.expects(:exist?).with(@certpath).returns(false)
+          Puppet::FileSystem.expects(:exist?).with(@certpath).returns(false)
 
-          @searcher.find(@request).should be_nil
+          expect(@searcher.find(@request)).to be_nil
         end
       end
 
@@ -139,18 +139,18 @@ describe Puppet::Indirector::SslFile do
 
         context "is readable" do
           it "should return an instance of the model, which it should use to read the certificate" do
-            FileTest.expects(:exist?).with(@certpath).returns true
+            Puppet::FileSystem.expects(:exist?).with(@certpath).returns true
 
             model.expects(:new).with("myname").returns cert
             cert.expects(:read).with(@certpath)
 
-            @searcher.find(@request).should equal(cert)
+            expect(@searcher.find(@request)).to equal(cert)
           end
         end
 
         context "is unreadable" do
           it "should raise an exception" do
-            FileTest.expects(:exist?).with(@certpath).returns(true)
+            Puppet::FileSystem.expects(:exist?).with(@certpath).returns(true)
 
             model.expects(:new).with("myname").returns cert
             cert.expects(:read).with(@certpath).raises(Errno::EACCES)
@@ -171,9 +171,9 @@ describe Puppet::Indirector::SslFile do
         # the support for upper-case certs can be removed around mid-2009.
         it "should rename the existing file to the lower-case path" do
           @path = @searcher.path("myhost")
-          FileTest.expects(:exist?).with(@path).returns(false)
+          Puppet::FileSystem.expects(:exist?).with(@path).returns(false)
           dir, file = File.split(@path)
-          FileTest.expects(:exist?).with(dir).returns true
+          Puppet::FileSystem.expects(:exist?).with(dir).returns true
           Dir.expects(:entries).with(dir).returns [".", "..", "something.pem", file.upcase]
 
           File.expects(:rename).with(File.join(dir, file.upcase), @path)
@@ -197,13 +197,13 @@ describe Puppet::Indirector::SslFile do
 
       it "should fail if the directory is absent" do
         FileTest.expects(:directory?).with(File.dirname(@certpath)).returns false
-        lambda { @searcher.save(@request) }.should raise_error(Puppet::Error)
+        expect { @searcher.save(@request) }.to raise_error(Puppet::Error)
       end
 
       it "should fail if the directory is not writeable" do
         FileTest.stubs(:directory?).returns true
         FileTest.expects(:writable?).with(File.dirname(@certpath)).returns false
-        lambda { @searcher.save(@request) }.should raise_error(Puppet::Error)
+        expect { @searcher.save(@request) }.to raise_error(Puppet::Error)
       end
 
       it "should save to the path the output of converting the certificate to a string" do
@@ -221,7 +221,7 @@ describe Puppet::Indirector::SslFile do
           @searcher.class.store_in @setting
           fh = mock 'filehandle'
           fh.stubs :print
-          Puppet.settings.expects(:writesub).with(@setting, @certpath).yields fh
+          Puppet.settings.setting(@setting).expects(:open_file).with(@certpath, 'w').yields fh
 
           @searcher.save(@request)
         end
@@ -233,7 +233,7 @@ describe Puppet::Indirector::SslFile do
 
           fh = mock 'filehandle'
           fh.stubs :print
-          Puppet.settings.expects(:write).with(@setting).yields fh
+          Puppet.settings.setting(@setting).expects(:open).with('w').yields fh
           @searcher.save(@request)
         end
       end
@@ -246,7 +246,7 @@ describe Puppet::Indirector::SslFile do
 
           fh = mock 'filehandle'
           fh.stubs :print
-          Puppet.settings.expects(:write).with(:cakey).yields fh
+          Puppet.settings.setting(:cakey).expects(:open).with('w').yields fh
           @searcher.stubs(:ca?).returns true
           @searcher.save(@request)
         end
@@ -256,27 +256,25 @@ describe Puppet::Indirector::SslFile do
     describe "when destroying certificates" do
       describe "that do not exist" do
         before do
-          FileTest.expects(:exist?).with(@certpath).returns false
+          Puppet::FileSystem.expects(:exist?).with(Puppet::FileSystem.pathname(@certpath)).returns false
         end
 
         it "should return false" do
-          @searcher.destroy(@request).should be_false
+          expect(@searcher.destroy(@request)).to be_falsey
         end
       end
 
       describe "that exist" do
-        before do
-          FileTest.expects(:exist?).with(@certpath).returns true
-        end
-
         it "should unlink the certificate file" do
-          File.expects(:unlink).with(@certpath)
+          path = Puppet::FileSystem.pathname(@certpath)
+          Puppet::FileSystem.expects(:exist?).with(path).returns true
+          Puppet::FileSystem.expects(:unlink).with(path)
           @searcher.destroy(@request)
         end
 
         it "should log that is removing the file" do
-          File.stubs(:exist?).returns true
-          File.stubs(:unlink)
+          Puppet::FileSystem.stubs(:exist?).returns true
+          Puppet::FileSystem.stubs(:unlink)
           Puppet.expects(:notice)
           @searcher.destroy(@request)
         end
@@ -302,7 +300,7 @@ describe Puppet::Indirector::SslFile do
         model.expects(:new).with("two").returns two
         two.expects(:read).with(two_path)
 
-        @searcher.search(@request).should == [one, two]
+        expect(@searcher.search(@request)).to eq([one, two])
       end
 
       it "should raise an exception if any file is unreadable" do
@@ -323,7 +321,7 @@ describe Puppet::Indirector::SslFile do
 
         model.expects(:new).never
 
-        @searcher.search(@request).should == []
+        expect(@searcher.search(@request)).to eq([])
       end
     end
   end

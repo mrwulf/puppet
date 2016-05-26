@@ -2,44 +2,33 @@ module Puppet::Network::HTTP
 end
 
 require 'puppet/network/http'
-require 'puppet/network/http/api/v1'
-require 'puppet/network/authorization'
-require 'puppet/network/authentication'
 require 'puppet/network/rights'
 require 'puppet/util/profiler'
+require 'puppet/util/profiler/aggregate'
 require 'resolv'
 
 module Puppet::Network::HTTP::Handler
-  include Puppet::Network::HTTP::API::V1
-  include Puppet::Network::Authorization
-  include Puppet::Network::Authentication
+  include Puppet::Network::HTTP::Issues
 
   # These shouldn't be allowed to be set by clients
   # in the query string, for security reasons.
   DISALLOWED_KEYS = ["node", "ip"]
 
-  class HTTPError < Exception
-    attr_reader :status
+  def register(routes)
+    # There's got to be a simpler way to do this, right?
+    dupes = {}
+    routes.each { |r| dupes[r.path_matcher] = (dupes[r.path_matcher] || 0) + 1 }
+    dupes = dupes.collect { |pm, count| pm if count > 1 }.compact
+    if dupes.count > 0
+      raise ArgumentError, "Given multiple routes with identical path regexes: #{dupes.map{ |rgx| rgx.inspect }.join(', ')}"
+    end
 
-    def initialize(message, status)
-      super(message)
-      @status = status
+    @routes = routes
+    Puppet.debug("Routes Registered:")
+    @routes.each do |route|
+      Puppet.debug(route.inspect)
     end
   end
-
-  class HTTPNotAcceptableError < HTTPError
-    def initialize(message)
-      super("Not Acceptable: " + message, 406)
-    end
-  end
-
-  class HTTPNotFoundError < HTTPError
-    def initialize(message)
-      super("Not Found: " + message, 404)
-    end
-  end
-
-  attr_reader :server, :handler
 
   # Retrieve all headers from the http request, as a hash with the header names
   # (lower-cased) as the keys
@@ -47,62 +36,44 @@ module Puppet::Network::HTTP::Handler
     raise NotImplementedError
   end
 
-  # Retrieve the accept header from the http request.
-  def accept_header(request)
-    raise NotImplementedError
-  end
-
-  # Retrieve the Content-Type header from the http request.
-  def content_type_header(request)
-    raise NotImplementedError
-  end
-
-  def request_format(request)
-    if header = content_type_header(request)
-      header.gsub!(/\s*;.*$/,'') # strip any charset
-      format = Puppet::Network::FormatHandler.mime(header)
-      raise "Client sent a mime-type (#{header}) that doesn't correspond to a format we support" if format.nil?
-      report_if_deprecated(format)
-      return format.name.to_s if format.suitable?
-    end
-
-    raise "No Content-Type header was received, it isn't possible to unserialize the request"
-  end
-
   def format_to_mime(format)
     format.is_a?(Puppet::Network::Format) ? format.mime : format
   end
 
-  def initialize_for_puppet(server)
-    @server = server
-  end
-
   # handle an HTTP request
   def process(request, response)
+    new_response = Puppet::Network::HTTP::Response.new(self, response)
+
     request_headers = headers(request)
     request_params = params(request)
     request_method = http_method(request)
     request_path = path(request)
 
+    new_request = Puppet::Network::HTTP::Request.new(request_headers, request_params, request_method, request_path, request_path, client_cert(request), body(request))
+
     response[Puppet::Network::HTTP::HEADER_PUPPET_VERSION] = Puppet.version
 
-    configure_profiler(request_headers, request_params)
+    profiler = configure_profiler(request_headers, request_params)
 
-    Puppet::Util::Profiler.profile("Processed request #{request_method} #{request_path}") do
-      indirection, method, key, params = uri2indirection(request_method, request_path, request_params)
-
-      check_authorization(indirection, method, key, params)
-      warn_if_near_expiration(client_cert(request))
-
-      send("do_#{method}", indirection, key, params, request, response)
+    Puppet::Util::Profiler.profile("Processed request #{request_method} #{request_path}", [:http, request_method, request_path]) do
+      if route = @routes.find { |r| r.matches?(new_request) }
+        route.process(new_request, new_response)
+      else
+        raise Puppet::Network::HTTP::Error::HTTPNotFoundError.new("No route for #{new_request.method} #{new_request.path}", HANDLER_NOT_FOUND)
+      end
     end
-  rescue SystemExit,NoMemoryError
-    raise
-  rescue HTTPError => e
-    return do_http_control_exception(response, e)
-  rescue Exception => e
-    return do_exception(response, e)
+
+  rescue Puppet::Network::HTTP::Error::HTTPError => e
+    Puppet.info(e.message)
+    new_response.respond_with(e.status, "application/json", e.to_json)
+  rescue StandardError => e
+    http_e = Puppet::Network::HTTP::Error::HTTPServerError.new(e)
+    Puppet.err(http_e.message)
+    new_response.respond_with(http_e.status, "application/json", http_e.to_json)
   ensure
+    if profiler
+      remove_profiler(profiler)
+    end
     cleanup(request)
   end
 
@@ -114,94 +85,6 @@ module Puppet::Network::HTTP::Handler
   # Set the specified format as the content type of the response.
   def set_content_type(response, format)
     raise NotImplementedError
-  end
-
-  def do_exception(response, exception, status=400)
-    if exception.is_a?(Puppet::Network::AuthorizationError)
-      # make sure we return the correct status code
-      # for authorization issues
-      status = 403 if status == 400
-    end
-
-    Puppet.log_exception(exception)
-
-    set_content_type(response, "text/plain")
-    set_response(response, exception.to_s, status)
-  end
-
-  def model(indirection_name)
-    raise ArgumentError, "Could not find indirection '#{indirection_name}'" unless indirection = Puppet::Indirector::Indirection.instance(indirection_name.to_sym)
-    indirection.model
-  end
-
-  # Execute our find.
-  def do_find(indirection_name, key, params, request, response)
-    model_class = model(indirection_name)
-    unless result = model_class.indirection.find(key, params)
-      raise HTTPNotFoundError, "Could not find #{indirection_name} #{key}"
-    end
-
-    format = accepted_response_formatter_for(model_class, request)
-    set_content_type(response, format)
-
-    rendered_result = result
-    if result.respond_to?(:render)
-      Puppet::Util::Profiler.profile("Rendered result in #{format}") do
-        rendered_result = result.render(format)
-      end
-    end
-
-    Puppet::Util::Profiler.profile("Sent response") do
-      set_response(response, rendered_result)
-    end
-  end
-
-  # Execute our head.
-  def do_head(indirection_name, key, params, request, response)
-    unless self.model(indirection_name).indirection.head(key, params)
-      raise HTTPNotFoundError, "Could not find #{indirection_name} #{key}"
-    end
-
-    # No need to set a response because no response is expected from a
-    # HEAD request.  All we need to do is not die.
-  end
-
-  # Execute our search.
-  def do_search(indirection_name, key, params, request, response)
-    model  = self.model(indirection_name)
-    result = model.indirection.search(key, params)
-
-    if result.nil?
-      raise HTTPNotFoundError, "Could not find instances in #{indirection_name} with '#{key}'"
-    end
-
-    format = accepted_response_formatter_for(model, request)
-    set_content_type(response, format)
-
-    set_response(response, model.render_multiple(format, result))
-  end
-
-  # Execute our destroy.
-  def do_destroy(indirection_name, key, params, request, response)
-    model_class = model(indirection_name)
-    formatter = accepted_response_formatter_or_yaml_for(model_class, request)
-
-    result = model_class.indirection.destroy(key, params)
-
-    set_content_type(response, formatter)
-    set_response(response, formatter.render(result))
-  end
-
-  # Execute our save.
-  def do_save(indirection_name, key, params, request, response)
-    model_class = model(indirection_name)
-    formatter = accepted_response_formatter_or_yaml_for(model_class, request)
-    sent_object = read_body_into_model(model_class, request)
-
-    result = model_class.indirection.save(sent_object, key)
-
-    set_content_type(response, formatter)
-    set_response(response, formatter.render(result))
   end
 
   # resolve node name from peer's ip address
@@ -216,61 +99,6 @@ module Puppet::Network::HTTP::Handler
   end
 
   private
-
-  def do_http_control_exception(response, exception)
-    msg = exception.message
-    Puppet.info(msg)
-    set_content_type(response, "text/plain")
-    set_response(response, msg, exception.status)
-  end
-
-  def report_if_deprecated(format)
-    if format.name == :yaml || format.name == :b64_zlib_yaml
-      Puppet.deprecation_warning("YAML in network requests is deprecated and will be removed in a future version. See http://links.puppetlabs.com/deprecate_yaml_on_network")
-    end
-  end
-
-  def accepted_response_formatter_for(model_class, request)
-    accepted_formats = accept_header(request) or raise HTTPNotAcceptableError, "Missing required Accept header"
-    response_formatter_for(model_class, request, accepted_formats)
-  end
-
-  def accepted_response_formatter_or_yaml_for(model_class, request)
-    accepted_formats = accept_header(request) || "yaml"
-    response_formatter_for(model_class, request, accepted_formats)
-  end
-
-  def response_formatter_for(model_class, request, accepted_formats)
-    formatter = Puppet::Network::FormatHandler.most_suitable_format_for(
-      accepted_formats.split(/\s*,\s*/),
-      model_class.supported_formats)
-
-    if formatter.nil?
-      raise HTTPNotAcceptableError, "No supported formats are acceptable (Accept: #{accepted_formats})"
-    end
-
-    report_if_deprecated(formatter)
-    formatter
-  end
-
-  def read_body_into_model(model_class, request)
-    data = body(request).to_s
-
-    format = request_format(request)
-    model_class.convert_from(format, data)
-  end
-
-  def get?(request)
-    http_method(request) == 'GET'
-  end
-
-  def put?(request)
-    http_method(request) == 'PUT'
-  end
-
-  def delete?(request)
-    http_method(request) == 'DELETE'
-  end
 
   # methods to be overridden by the including web server class
 
@@ -315,12 +143,7 @@ module Puppet::Network::HTTP::Handler
   end
 
   def parse_parameter_value(param, value)
-    case value
-    when /^---/
-      Puppet.debug("Found YAML while processing request parameter #{param} (value: <#{value}>)")
-      Puppet.deprecation_warning("YAML in network requests is deprecated and will be removed in a future version. See http://links.puppetlabs.com/deprecate_yaml_on_network")
-      YAML.load(value, :safe => true, :deserialize_symbols => true)
-    when Array
+    if value.is_a?(Array)
       value.collect { |v| parse_primitive_parameter_value(v) }
     else
       parse_primitive_parameter_value(value)
@@ -344,9 +167,12 @@ module Puppet::Network::HTTP::Handler
 
   def configure_profiler(request_headers, request_params)
     if (request_headers.has_key?(Puppet::Network::HTTP::HEADER_ENABLE_PROFILING.downcase) or Puppet[:profile])
-      Puppet::Util::Profiler.current = Puppet::Util::Profiler::WallClock.new(Puppet.method(:debug), request_params.object_id)
-    else
-      Puppet::Util::Profiler.current = Puppet::Util::Profiler::NONE
+      Puppet::Util::Profiler.add_profiler(Puppet::Util::Profiler::Aggregate.new(Puppet.method(:debug), request_params.object_id))
     end
+  end
+
+  def remove_profiler(profiler)
+    profiler.shutdown
+    Puppet::Util::Profiler.remove_profiler(profiler)
   end
 end

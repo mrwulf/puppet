@@ -27,8 +27,8 @@ describe Puppet::Daemon, :unless => Puppet.features.microsoft_windows? do
     end
   end
 
-  let(:server) { stub("Server", :start => nil, :wait_for_shutdown => nil) }
   let(:agent) { Puppet::Agent.new(TestClient.new, false) }
+  let(:server) { stub("Server", :start => nil, :wait_for_shutdown => nil) }
 
   let(:pidfile) { stub("PidFile", :lock => true, :unlock => true, :file_path => 'fake.pid') }
   let(:scheduler) { RecordingScheduler.new }
@@ -44,20 +44,25 @@ describe Puppet::Daemon, :unless => Puppet.features.microsoft_windows? do
     daemon.reopen_logs
   end
 
-  let(:server) { stub("Server", :start => nil, :wait_for_shutdown => nil) }
-
   describe "when setting signal traps" do
-    signals = {:INT => :stop, :TERM => :stop }
-    signals.update({:HUP => :restart, :USR1 => :reload, :USR2 => :reopen_logs}) unless Puppet.features.microsoft_windows?
-    signals.each do |signal, method|
-      it "should log and call #{method} when it receives #{signal}" do
-        Signal.expects(:trap).with(signal).yields
-
-        Puppet.expects(:notice)
-
-        daemon.expects(method)
+    [:INT, :TERM].each do |signal|
+      it "logs a notice and exits when sent #{signal}" do
+        Signal.stubs(:trap).with(signal).yields
+        Puppet.expects(:notice).with("Caught #{signal}; exiting")
+        daemon.expects(:stop)
 
         daemon.set_signal_traps
+      end
+    end
+
+    {:HUP => :restart, :USR1 => :reload, :USR2 => :reopen_logs}.each do |signal, method|
+      it "logs a notice and remembers to call #{method} when it receives #{signal}" do
+        Signal.stubs(:trap).with(signal).yields
+        Puppet.expects(:notice).with("Caught #{signal}; storing #{method}")
+
+        daemon.set_signal_traps
+
+        expect(daemon.signals).to eq([method])
       end
     end
   end
@@ -99,7 +104,7 @@ describe Puppet::Daemon, :unless => Puppet.features.microsoft_windows? do
 
       daemon.start
 
-      scheduler.jobs[0].should_not be_enabled
+      expect(scheduler.jobs[0]).not_to be_enabled
     end
 
     it "disables the agent run when there is no agent" do
@@ -108,7 +113,7 @@ describe Puppet::Daemon, :unless => Puppet.features.microsoft_windows? do
 
       daemon.start
 
-      scheduler.jobs[1].should_not be_enabled
+      expect(scheduler.jobs[1]).not_to be_enabled
     end
 
     it "waits for the server to shutdown when there is one" do
@@ -180,7 +185,8 @@ describe Puppet::Daemon, :unless => Puppet.features.microsoft_windows? do
     end
 
     it "should do nothing if the agent is running" do
-      agent.expects(:running?).returns true
+      agent.expects(:run).with({:splay => false}).raises Puppet::LockError, 'Failed to aquire lock'
+      Puppet.expects(:notice).with('Not triggering already-running agent')
 
       daemon.agent = agent
 
@@ -188,8 +194,8 @@ describe Puppet::Daemon, :unless => Puppet.features.microsoft_windows? do
     end
 
     it "should run the agent if one is available and it is not running" do
-      agent.expects(:running?).returns false
       agent.expects(:run).with({:splay => false})
+      Puppet.expects(:notice).with('Not triggering already-running agent').never
 
       daemon.agent = agent
 
@@ -235,7 +241,7 @@ describe Puppet::Daemon, :unless => Puppet.features.microsoft_windows? do
 
     it "should fail if no argv values are available" do
       daemon.expects(:argv).returns nil
-      lambda { daemon.reexec }.should raise_error(Puppet::DevError)
+      expect { daemon.reexec }.to raise_error(Puppet::DevError)
     end
 
     it "should shut down without exiting" do

@@ -1,11 +1,28 @@
-begin test_name "Lookup data using the hiera parser function"
+test_name "Lookup data using the hiera_array parser function"
+
+testdir = master.tmpdir('hiera')
 
 step 'Setup'
-on master, "mkdir -p /var/lib/hiera"
 
-apply_manifest_on master, <<-PP
-file { '/etc/puppet/hiera.yaml':
-  ensure  => present,
+apply_manifest_on(master, <<-PP, :catch_failures => true)
+File {
+  ensure => directory,
+  mode => "0750",
+  owner => #{master.puppet['user']},
+  group => #{master.puppet['group']},
+}
+
+file {
+  '#{testdir}':;
+  '#{testdir}/hieradata':;
+  '#{testdir}/environments':;
+  '#{testdir}/environments/production':;
+  '#{testdir}/environments/production/manifests':;
+  '#{testdir}/environments/production/modules':;
+}
+
+file { '#{testdir}/hiera.yaml':
+  ensure  => file,
   content => '---
     :backends:
       - "yaml"
@@ -16,89 +33,73 @@ file { '/etc/puppet/hiera.yaml':
       - "global"
 
     :yaml:
-      :datadir: "/var/lib/hiera"
-  '
+      :datadir: "#{testdir}/hieradata"
+  ',
+  mode => "0640";
 }
 
-file { '/var/lib/hiera':
-  ensure  => directory,
-  recurse => true,
-  purge   => true,
-  force   => true,
-}
-PP
-
-apply_manifest_on master, <<-PP
-file { '/var/lib/hiera/global.yaml':
-  ensure  => present,
+file { '#{testdir}/hieradata/global.yaml':
+  ensure  => file,
   content => "---
     port: '8080'
     ntpservers: ['global.ntp.puppetlabs.com']
-  "
+  ",
+  mode => "0640";
 }
 
-file { '/var/lib/hiera/production.yaml':
-  ensure  => present,
+file { '#{testdir}/hieradata/production.yaml':
+  ensure  => file,
   content => "---
     ntpservers: ['production.ntp.puppetlabs.com']
-  "
+  ",
+  mode => "0640";
 }
 
-PP
+file {
+  '#{testdir}/environments/production/modules/ntp':;
+  '#{testdir}/environments/production/modules/ntp/manifests':;
+}
 
-testdir = master.tmpdir('hiera')
+file { '#{testdir}/environments/production/modules/ntp/manifests/init.pp':
+  ensure => file,
+  content => '
+    class ntp {
+      $ntpservers = hiera_array("ntpservers")
 
-create_remote_file(master, "#{testdir}/puppet.conf", <<END)
-[main]
-  manifest   = "#{testdir}/site.pp"
-  modulepath = "#{testdir}/modules"
-END
+      define print {
+        $server = $name
+        notify { "ntpserver ${server}": }
+      }
 
-on master, "mkdir -p #{testdir}/modules/ntp/manifests"
+      ntp::print { $ntpservers: }
+    }',
+  mode => "0640";
+}
 
-agent_names = agents.map { |agent| "'#{agent.to_s}'" }.join(', ')
-create_remote_file(master, "#{testdir}/site.pp", <<-PP)
-node default {
-  include ntp
+file { '#{testdir}/environments/production/manifests/site.pp':
+  ensure => file,
+  content => "
+    node default {
+      include ntp
+    }",
+  mode => "0640";
 }
 PP
-
-create_remote_file(master, "#{testdir}/modules/ntp/manifests/init.pp", <<-PP)
-class ntp {
-  $ntpservers = hiera_array('ntpservers')
-
-  define print {
-    $server = $name
-    notify { "ntpserver ${server}": }
-  }
-
-  print { $ntpservers: }
-}
-PP
-
-on master, "chown -R root:puppet #{testdir}"
-on master, "chmod -R g+rwX #{testdir}"
-
 
 step "Try to lookup array data"
 
-with_master_running_on(master, "--config #{testdir}/puppet.conf --debug --verbose --daemonize --dns_alt_names=\"puppet,$(facter hostname),$(facter fqdn)\" --autosign true") do
+master_opts = {
+  'main' => {
+    'environmentpath' => "#{testdir}/environments",
+    'hiera_config' => "#{testdir}/hiera.yaml",
+  },
+}
+
+with_puppet_running_on master, master_opts, testdir do
   agents.each do |agent|
-    run_agent_on(agent, "--no-daemonize --onetime --verbose --server #{master}")
+    on(agent, puppet('agent', "-t --server #{master}"), :acceptable_exit_codes => [2])
 
     assert_match("ntpserver global.ntp.puppetlabs.com", stdout)
     assert_match("ntpserver production.ntp.puppetlabs.com", stdout)
   end
-end
-
-
-ensure step "Teardown"
-apply_manifest_on master, <<-PP
-file { '/var/lib/hiera':
-  ensure  => directory,
-  recurse => true,
-  purge   => true,
-  force   => true,
-}
-PP
 end

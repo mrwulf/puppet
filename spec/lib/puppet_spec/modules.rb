@@ -4,7 +4,7 @@ module PuppetSpec::Modules
       module_dir = File.join(dir, name)
       FileUtils.mkdir_p(module_dir)
 
-      environment = Puppet::Node::Environment.new(options[:environment])
+      environment = options[:environment]
 
       if metadata = options[:metadata]
         metadata[:source]  ||= 'github'
@@ -21,6 +21,17 @@ module PuppetSpec::Modules
       end
 
       Puppet::Module.new(name, module_dir, environment)
+    end
+
+    def generate_files(name, dir, options = {})
+      module_dir = File.join(dir, name)
+      FileUtils.mkdir_p(module_dir)
+
+      if metadata = options[:metadata]
+        File.open(File.join(module_dir, 'metadata.json'), 'w') do |f|
+          f.write(metadata.to_pson)
+        end
+      end
     end
   end
 end

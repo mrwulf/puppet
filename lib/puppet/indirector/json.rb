@@ -15,16 +15,16 @@ class Puppet::Indirector::JSON < Puppet::Indirector::Terminus
     filename = path(request.key)
     FileUtils.mkdir_p(File.dirname(filename))
 
-    Puppet::Util.replace_file(filename, 0660) {|f| f.print to_json(request.instance) }
+    Puppet::Util.replace_file(filename, 0660) {|f| f.print to_json(request.instance).force_encoding(Encoding::ASCII_8BIT) }
   rescue TypeError => detail
-    Puppet.log_exception "Could not save #{self.name} #{request.key}: #{detail}"
+    Puppet.log_exception(detail, "Could not save #{self.name} #{request.key}: #{detail}")
   end
 
   def destroy(request)
-    File.unlink(path(request.key))
+    Puppet::FileSystem.unlink(path(request.key))
   rescue => detail
     unless detail.is_a? Errno::ENOENT
-      raise Puppet::Error, "Could not destroy #{self.name} #{request.key}: #{detail}"
+      raise Puppet::Error, "Could not destroy #{self.name} #{request.key}: #{detail}", detail.backtrace
     end
     1                           # emulate success...
   end
@@ -52,17 +52,17 @@ class Puppet::Indirector::JSON < Puppet::Indirector::Terminus
     json = nil
 
     begin
-      json = File.read(file)
+      json = Puppet::FileSystem.read(file).force_encoding(Encoding::ASCII_8BIT)
     rescue Errno::ENOENT
       return nil
     rescue => detail
-      raise Puppet::Error, "Could not read JSON data for #{indirection.name} #{key}: #{detail}"
+      raise Puppet::Error, "Could not read JSON data for #{indirection.name} #{key}: #{detail}", detail.backtrace
     end
 
     begin
       return from_json(json)
     rescue => detail
-      raise Puppet::Error, "Could not parse JSON data for #{indirection.name} #{key}: #{detail}"
+      raise Puppet::Error, "Could not parse JSON data for #{indirection.name} #{key}: #{detail}", detail.backtrace
     end
   end
 

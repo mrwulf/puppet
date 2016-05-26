@@ -16,6 +16,14 @@ Puppet::Type.type(:service).provide :init, :parent => :base do
     end
   end
 
+  # Debian and Ubuntu should use the Debian provider.
+  # RedHat systems should use the RedHat provider.
+  confine :true => begin
+      os = Facter.value(:operatingsystem).downcase
+      family = Facter.value(:osfamily).downcase
+      !(os == 'debian' || os == 'ubuntu' || family == 'redhat')
+  end
+
   # We can't confine this here, because the init path can be overridden.
   #confine :exists => defpath
 
@@ -43,10 +51,25 @@ Puppet::Type.type(:service).provide :init, :parent => :base do
     excludes += %w{wait-for-state portmap-wait}
     # these excludes were found with grep -r -L start /etc/init.d
     excludes += %w{rcS module-init-tools}
+    # Prevent puppet failing on unsafe scripts from Yocto Linux
+    if Facter.value(:osfamily) == "cisco-wrlinux"
+      excludes += %w{banner.sh bootmisc.sh checkroot.sh devpts.sh dmesg.sh
+                   hostname.sh mountall.sh mountnfs.sh populate-volatile.sh
+                   rmnologin.sh save-rtc.sh sendsigs sysfs.sh umountfs
+                   umountnfs.sh}
+    end
     # Prevent puppet failing to get status of the new service introduced
     # by the fix for this (bug https://bugs.launchpad.net/ubuntu/+source/lightdm/+bug/982889)
     # due to puppet's inability to deal with upstart services with instances.
     excludes += %w{plymouth-ready}
+    # Prevent puppet failing to get status of these services, which need parameters
+    # passed in (see https://bugs.launchpad.net/ubuntu/+source/puppet/+bug/1276766).
+    excludes += %w{idmapd-mounting startpar-bridge}
+    # Prevent puppet failing to get status of these services, additional upstart
+    # service with instances
+    excludes += %w{cryptdisks-udev}
+    excludes += %w{statd-mounting}
+    excludes += %w{gssd-mounting}
   end
 
   # List all services of this type.
@@ -99,7 +122,7 @@ Puppet::Type.type(:service).provide :init, :parent => :base do
       if File.directory?(path)
         true
       else
-        if File.exist?(path)
+        if Puppet::FileSystem.exist?(path)
           self.debug "Search path #{path} is not a directory"
         else
           self.debug "Search path #{path} does not exist"
@@ -112,7 +135,7 @@ Puppet::Type.type(:service).provide :init, :parent => :base do
   def search(name)
     paths.each do |path|
       fqname = File.join(path,name)
-      if File.exist? fqname
+      if Puppet::FileSystem.exist? fqname
         return fqname
       else
         self.debug("Could not find #{name} in #{path}")
@@ -121,7 +144,7 @@ Puppet::Type.type(:service).provide :init, :parent => :base do
 
     paths.each do |path|
       fqname_sh = File.join(path,"#{name}.sh")
-      if File.exist? fqname_sh
+      if Puppet::FileSystem.exist? fqname_sh
         return fqname_sh
       else
         self.debug("Could not find #{name}.sh in #{path}")
@@ -144,6 +167,13 @@ Puppet::Type.type(:service).provide :init, :parent => :base do
     (@resource[:hasrestart] == :true) && [initscript, :restart]
   end
 
+  def texecute(type, command, fof = true, squelch = false, combine = true)
+    if type == :start && Facter.value(:osfamily) == "Solaris"
+        command =  ["/usr/bin/ctrun -l none", command].flatten.join(" ")
+    end
+    super(type, command, fof, squelch, combine)
+  end
+
   # If it was specified that the init script has a 'status' command, then
   # we just return that; otherwise, we return false, which causes it to
   # fallback to other mechanisms.
@@ -154,7 +184,8 @@ Puppet::Type.type(:service).provide :init, :parent => :base do
 private
 
   def self.is_init?(script = initscript)
-    !File.symlink?(script) || File.readlink(script) != "/lib/init/upstart-job"
+    file = Puppet::FileSystem.pathname(script)
+    !Puppet::FileSystem.symlink?(file) || Puppet::FileSystem.readlink(file) != "/lib/init/upstart-job"
   end
 end
 

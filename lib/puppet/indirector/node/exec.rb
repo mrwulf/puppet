@@ -3,7 +3,7 @@ require 'puppet/indirector/exec'
 
 class Puppet::Node::Exec < Puppet::Indirector::Exec
   desc "Call an external program to get node information.  See
-  the [External Nodes](http://docs.puppetlabs.com/guides/external_nodes.html) page for more information."
+  the [External Nodes](https://docs.puppetlabs.com/guides/external_nodes.html) page for more information."
   include Puppet::Util
 
   def command
@@ -21,7 +21,7 @@ class Puppet::Node::Exec < Puppet::Indirector::Exec
 
     # Set the requested environment if it wasn't overridden
     # If we don't do this it gets set to the local default
-    result[:environment] ||= request.environment.name
+    result[:environment] ||= request.environment
 
     create_node(request.key, result)
   end
@@ -64,6 +64,6 @@ class Puppet::Node::Exec < Puppet::Indirector::Exec
     end
 
   rescue => detail
-      raise Puppet::Error, "Could not load external node results for #{name}: #{detail}"
+      raise Puppet::Error, "Could not load external node results for #{name}: #{detail}", detail.backtrace
   end
 end

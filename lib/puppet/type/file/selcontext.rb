@@ -6,7 +6,7 @@
 # drwxr-xr-x  root root system_u:object_r:root_t         /
 #
 # The context of '/' here is 'system_u:object_r:root_t'.  This is
-# three seperate fields:
+# three separate fields:
 #
 # system_u is the user context
 # object_r is the role context
@@ -17,7 +17,7 @@
 # command.  This allows the user to specify a subset of the three
 # values while leaving the others alone.
 #
-# See http://www.nsa.gov/selinux/ for complete docs on SELinux.
+# See https://www.nsa.gov/selinux/ for complete docs on SELinux.
 
 
 module Puppet

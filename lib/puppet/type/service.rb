@@ -7,7 +7,7 @@
 
 module Puppet
 
-  newtype(:service) do
+  Type.newtype(:service) do
     @doc = "Manage running services.  Service support unfortunately varies
       widely by platform --- some platforms have very little if any concept of a
       running service, and some have a very codified and powerful concept.
@@ -17,14 +17,20 @@ module Puppet
       Puppet 2.7 and newer expect init scripts to have a working status command.
       If this isn't the case for any of your services' init scripts, you will
       need to set `hasstatus` to false and possibly specify a custom status
-      command in the `status` attribute.
+      command in the `status` attribute. As a last resort, Puppet will attempt to
+      search the process table by calling whatever command is listed in the `ps`
+      fact. The default search pattern is the name of the service, but you can
+      specify it with the `pattern` attribute.
 
-      Note that if a `service` receives an event from another resource,
-      the service will get restarted. The actual command to restart the
-      service depends on the platform. You can provide an explicit command for
-      restarting with the `restart` attribute, or you can set `hasrestart` to
-      true to use the init script's restart command; if you do neither, the
-      service's stop and start commands will be used."
+      **Refresh:** `service` resources can respond to refresh events (via
+      `notify`, `subscribe`, or the `~>` arrow). If a `service` receives an
+      event from another resource, Puppet will restart the service it manages.
+      The actual command used to restart the service depends on the platform and
+      can be configured:
+
+      * If you set `hasrestart` to true, Puppet will use the init script's restart command.
+      * You can provide an explicit command for restarting with the `restart` attribute.
+      * If you do neither, the service's stop and start commands will be used."
 
     feature :refreshable, "The provider can restart the service.",
       :methods => [:restart]
@@ -33,6 +39,11 @@ module Puppet
       :methods => [:disable, :enable, :enabled?]
 
     feature :controllable, "The provider uses a control variable."
+
+    feature :flaggable, "The provider can pass flags to the service."
+
+    feature :maskable, "The provider can 'mask' the service.",
+      :methods => [:mask]
 
     newproperty(:enable, :required_features => :enableable) do
       desc "Whether a service should be enabled to start at boot.
@@ -52,8 +63,25 @@ module Puppet
         provider.manual_start
       end
 
+      # This only makes sense on systemd systems. Otherwise, it just defaults
+      # to disable.
+      newvalue(:mask, :event => :service_disabled, :required_features => :maskable) do
+        provider.mask
+      end
+
       def retrieve
         provider.enabled?
+      end
+
+      # This only makes sense on systemd systems. Static services cannot be enabled
+      # or disabled manually.
+      def insync?(current)
+        if provider.respond_to?(:cached_enabled?) && provider.cached_enabled? == 'static'
+          Puppet.debug("Unable to enable or disable static service #{@resource[:name]}")
+          return true
+        end
+
+        super(current)
       end
 
       validate do |value|
@@ -92,6 +120,10 @@ module Puppet
 
         event
       end
+    end
+
+    newproperty(:flags, :required_features => :flaggable) do
+      desc "Specify a string of flags to pass to the startup script."
     end
 
     newparam(:binary) do
@@ -155,7 +187,8 @@ module Puppet
         command.
 
         Defaults to the name of the service. The pattern can be a simple string
-        or any legal Ruby pattern."
+        or any legal Ruby pattern, including regular expressions (which should
+        be quoted without enclosing slashes)."
 
       defaultto { @resource[:binary] || @resource[:name] }
     end
@@ -180,7 +213,7 @@ module Puppet
         automatically, usually by looking for the service in the process
         table.
 
-        [lsb-exit-codes]: http://refspecs.freestandards.org/LSB_3.1.1/LSB-Core-generic/LSB-Core-generic/iniscrptact.html"
+        [lsb-exit-codes]: http://refspecs.linuxfoundation.org/LSB_4.1.0/LSB-Core-generic/LSB-Core-generic/iniscrptact.html"
     end
 
     newparam(:stop) do
@@ -216,6 +249,10 @@ module Puppet
       else
         debug "Skipping restart; service is not running"
       end
+    end
+
+    def self.needs_ensure_retrieved
+      false
     end
   end
 end

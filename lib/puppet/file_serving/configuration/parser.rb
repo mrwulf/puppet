@@ -7,7 +7,7 @@ class Puppet::FileServing::Configuration::Parser
 
   # Parse our configuration file.
   def parse
-    raise("File server configuration #{@file} does not exist") unless FileTest.exists?(@file)
+    raise("File server configuration #{@file} does not exist") unless Puppet::FileSystem.exist?(@file)
     raise("Cannot read file server configuration #{@file}") unless FileTest.readable?(@file)
 
     @mounts = {}
@@ -37,10 +37,10 @@ class Puppet::FileServing::Configuration::Parser
           when "deny"
             deny(mount, value)
           else
-            raise ArgumentError.new("Invalid argument '#{var}'", @count, @file)
+            raise ArgumentError.new("Invalid argument '#{var}' in #{@file.filename}, line #{@count}")
           end
         else
-          raise ArgumentError.new("Invalid line '#{line.chomp}'", @count, @file)
+          raise ArgumentError.new("Invalid line '#{line.chomp}' at #{@file.filename}, line #{@count}")
         end
       }
     }
@@ -67,7 +67,7 @@ class Puppet::FileServing::Configuration::Parser
         mount.info "allowing #{val} access"
         mount.allow(val)
       rescue Puppet::AuthStoreError => detail
-        raise ArgumentError.new(detail.to_s, @count, @file)
+        raise ArgumentError.new("#{detail.to_s} in #{@file}, line #{@count}")
       end
     }
   end
@@ -79,14 +79,14 @@ class Puppet::FileServing::Configuration::Parser
         mount.info "denying #{val} access"
         mount.deny(val)
       rescue Puppet::AuthStoreError => detail
-        raise ArgumentError.new(detail.to_s, @count, @file)
+        raise ArgumentError.new("#{detail.to_s} in #{@file}, line #{@count}")
       end
     }
   end
 
   # Create a new mount.
   def newmount(name)
-    raise ArgumentError, "#{@mounts[name]} is already mounted at #{name}", @count, @file if @mounts.include?(name)
+    raise ArgumentError.new("#{@mounts[name]} is already mounted at #{name} in #{@file}, line #{@count}") if @mounts.include?(name)
     case name
     when "modules"
       mount = Mount::Modules.new(name)

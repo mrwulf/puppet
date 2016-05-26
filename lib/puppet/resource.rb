@@ -1,50 +1,47 @@
 require 'puppet'
 require 'puppet/util/tagging'
-require 'puppet/util/pson'
 require 'puppet/parameter'
+require 'puppet/data_providers'
 
 # The simplest resource class.  Eventually it will function as the
 # base class for all resource-like behaviour.
 #
 # @api public
 class Puppet::Resource
-  # This stub class is only needed for serialization compatibility with 0.25.x.
-  # Specifically, it exists to provide a compatibility API when using YAML
-  # serialized objects loaded from StoreConfigs.
-  Reference = Puppet::Resource
-
   include Puppet::Util::Tagging
 
-  require 'puppet/resource/type_collection_helper'
-  include Puppet::Resource::TypeCollectionHelper
-
-  extend Puppet::Util::Pson
   include Enumerable
-  attr_accessor :file, :line, :catalog, :exported, :virtual, :validate_parameters, :strict
+  attr_accessor :file, :line, :catalog, :exported, :virtual, :strict
   attr_reader :type, :title
+
+  # @deprecated
+  attr_accessor :validate_parameters
 
   require 'puppet/indirector'
   extend Puppet::Indirector
   indirects :resource, :terminus_class => :ral
 
-  ATTRIBUTES = [:file, :line, :exported]
+  ATTRIBUTES = [:file, :line, :exported].freeze
+  TYPE_CLASS = 'Class'.freeze
+  TYPE_NODE  = 'Node'.freeze
+  TYPE_SITE  = 'Site'.freeze
 
-  def self.from_pson(pson)
-    raise ArgumentError, "No resource type provided in serialized data" unless type = pson['type']
-    raise ArgumentError, "No resource title provided in serialized data" unless title = pson['title']
+  def self.from_data_hash(data)
+    raise ArgumentError, "No resource type provided in serialized data" unless type = data['type']
+    raise ArgumentError, "No resource title provided in serialized data" unless title = data['title']
 
     resource = new(type, title)
 
-    if params = pson['parameters']
+    if params = data['parameters']
       params.each { |param, value| resource[param] = value }
     end
 
-    if tags = pson['tags']
+    if tags = data['tags']
       tags.each { |tag| resource.tag(tag) }
     end
 
     ATTRIBUTES.each do |a|
-      if value = pson[a.to_s]
+      if value = data[a.to_s]
         resource.send(a.to_s + "=", value)
       end
     end
@@ -56,7 +53,7 @@ class Puppet::Resource
     "#{@type}[#{@title}]#{to_hash.inspect}"
   end
 
-  def to_pson_data_hash
+  def to_data_hash
     data = ([:type, :title, :tags] + ATTRIBUTES).inject({}) do |hash, param|
       next hash unless value = self.send(param)
       hash[param.to_s] = value
@@ -114,10 +111,6 @@ class Puppet::Resource
     YAML_ATTRIBUTES & super
   end
 
-  def to_pson(*args)
-    to_pson_data_hash.to_pson(*args)
-  end
-
   # Proxy these methods to the parameters hash.  It's likely they'll
   # be overridden at some point, but this works for now.
   %w{has_key? keys length delete empty? <<}.each do |method|
@@ -165,23 +158,6 @@ class Puppet::Resource
     super || parameters.keys.include?( parameter_name(parameter) )
   end
 
-  # These two methods are extracted into a Helper
-  # module, but file load order prevents me
-  # from including them in the class, and I had weird
-  # behaviour (i.e., sometimes it didn't work) when
-  # I directly extended each resource with the helper.
-  def environment
-    Puppet::Node::Environment.new(@environment)
-  end
-
-  def environment=(env)
-    if env.is_a?(String) or env.is_a?(Symbol)
-      @environment = env
-    else
-      @environment = env.name
-    end
-  end
-
   %w{exported virtual strict}.each do |m|
     define_method(m+"?") do
       self.send(m)
@@ -189,40 +165,101 @@ class Puppet::Resource
   end
 
   def class?
-    @is_class ||= @type == "Class"
+    @is_class ||= @type == TYPE_CLASS
   end
 
   def stage?
     @is_stage ||= @type.to_s.downcase == "stage"
   end
 
-  # Create our resource.
+  # Construct a resource from data.
+  #
+  # Constructs a resource instance with the given `type` and `title`. Multiple
+  # type signatures are possible for these arguments and most will result in an
+  # expensive call to {Puppet::Node::Environment#known_resource_types} in order
+  # to resolve `String` and `Symbol` Types to actual Ruby classes.
+  #
+  # @param type [Symbol, String] The name of the Puppet Type, as a string or
+  #   symbol. The actual Type will be looked up using
+  #   {Puppet::Node::Environment#known_resource_types}. This lookup is expensive.
+  # @param type [String] The full resource name in the form of
+  #   `"Type[Title]"`. This method of calling should only be used when
+  #   `title` is `nil`.
+  # @param type [nil] If a `nil` is passed, the title argument must be a string
+  #   of the form `"Type[Title]"`.
+  # @param type [Class] A class that inherits from `Puppet::Type`. This method
+  #   of construction is much more efficient as it skips calls to
+  #   {Puppet::Node::Environment#known_resource_types}.
+  #
+  # @param title [String, :main, nil] The title of the resource. If type is `nil`, may also
+  #   be the full resource name in the form of `"Type[Title]"`.
+  #
+  # @api public
   def initialize(type, title = nil, attributes = {})
     @parameters = {}
+    if type.is_a?(Puppet::Resource)
+      # Copy constructor. Let's avoid munging, extracting, tagging, etc
+      src = type
+      self.file = src.file
+      self.line = src.line
+      self.exported = src.exported
+      self.virtual = src.virtual
+      self.set_tags(src)
+      self.environment = src.environment
+      @rstype = src.resource_type
+      @type = src.type
+      @title = src.title
 
-    # Set things like strictness first.
-    attributes.each do |attr, value|
-      next if attr == :parameters
-      send(attr.to_s + "=", value)
+      src.to_hash.each do |p, v|
+        if v.is_a?(Puppet::Resource)
+          v = Puppet::Resource.new(v.type, v.title)
+        elsif v.is_a?(Array)
+          # flatten resource references arrays
+          v = v.flatten if v.flatten.find { |av| av.is_a?(Puppet::Resource) }
+          v = v.collect do |av|
+            av = Puppet::Resource.new(av.type, av.title) if av.is_a?(Puppet::Resource)
+            av
+          end
+        end
+
+        self[p] = v
+      end
+    else
+      if type.is_a?(Hash)
+        raise ArgumentError, "Puppet::Resource.new does not take a hash as the first argument. "+
+          "Did you mean (#{(type[:type] || type["type"]).inspect}, #{(type[:title] || type["title"]).inspect }) ?"
+      end
+
+      environment = attributes[:environment]
+      if type.is_a?(Class) && type < Puppet::Type
+        # Set the resource type to avoid an expensive `known_resource_types`
+        # lookup.
+        self.resource_type = type
+        # From this point on, the constructor behaves the same as if `type` had
+        # been passed as a symbol.
+        type = type.name
+      end
+
+      # Set things like strictness first.
+      attributes.each do |attr, value|
+        next if attr == :parameters
+        send(attr.to_s + "=", value)
+      end
+
+      @type, @title = self.class.type_and_title(type, title)
+
+      if params = attributes[:parameters]
+        extract_parameters(params)
+      end
+
+      if resource_type && resource_type.respond_to?(:deprecate_params)
+        resource_type.deprecate_params(title, attributes[:parameters])
+      end
+
+      tag(self.type)
+      tag_if_valid(self.title)
     end
 
-    @type, @title = extract_type_and_title(type, title)
-
-    @type = munge_type_name(@type)
-
-    if self.class?
-      @title = :main if @title == ""
-      @title = munge_type_name(@title)
-    end
-
-    if params = attributes[:parameters]
-      extract_parameters(params)
-    end
-
-    tag(self.type)
-    tag(self.title) if valid_tag?(self.title)
-
-    @reference = self # for serialization compatibility with 0.25.x
     if strict? and ! resource_type
       if self.class?
         raise ArgumentError, "Could not find declared class #{title}"
@@ -241,13 +278,71 @@ class Puppet::Resource
     catalog ? catalog.resource(to_s) : nil
   end
 
+  # A resource is an application component if it exports or consumes
+  # one or more capabilities, or if it requires a capability resource
+  def is_application_component?
+    return true if ! export.empty? || self[:consume]
+    # Array(self[:require]) does not work for Puppet::Resource instances
+    req = self[:require] || []
+    req = [ req ] unless req.is_a?(Array)
+    req.any? { |r| r.is_capability? }
+  end
+
+  # A resource is a capability (instance) if its underlying type is a
+  # capability type
+  def is_capability?
+    resource_type and resource_type.is_capability?
+  end
+
+  # Returns the value of the 'export' metaparam as an Array
+  # @api private
+  def export
+    v = self[:export] || []
+    v.is_a?(Array) ? v : [ v ]
+  end
+
+  # The resource's type implementation
+  # @return [Puppet::Type, Puppet::Resource::Type]
+  # @api private
   def resource_type
-    @rstype ||= case type
-    when "Class"; known_resource_types.hostclass(title == :main ? "" : title)
-    when "Node"; known_resource_types.node(title)
+    @rstype ||= self.class.resource_type(type, title, environment)
+  end
+
+  # The resource's type implementation
+  # @return [Puppet::Type, Puppet::Resource::Type]
+  # @api private
+  def self.resource_type(type, title, environment)
+    case type
+    when TYPE_CLASS; environment.known_resource_types.hostclass(title == :main ? "" : title)
+    when TYPE_NODE; environment.known_resource_types.node(title)
+    when TYPE_SITE; environment.known_resource_types.site(nil)
     else
-      Puppet::Type.type(type) || known_resource_types.definition(type)
+      result = Puppet::Type.type(type)
+      if !result
+        krt = environment.known_resource_types
+        result = krt.definition(type) || krt.application(type)
+      end
+      result
     end
+  end
+
+  # Set the resource's type implementation
+  # @param type [Puppet::Type, Puppet::Resource::Type]
+  # @api private
+  def resource_type=(type)
+    @rstype = type
+  end
+
+  def environment
+    @environment ||= if catalog
+                       catalog.environment_instance
+                     else
+                       Puppet.lookup(:current_environment) { Puppet::Node::Environment::NONE }
+                     end
+  end
+
+  def environment=(environment)
+    @environment = environment
   end
 
   # Produce a simple hash of our parameters.
@@ -260,15 +355,36 @@ class Puppet::Resource
   end
 
   def uniqueness_key
-    # Temporary kludge to deal with inconsistant use patters
+    # Temporary kludge to deal with inconsistent use patterns; ensure we don't return nil for namevar/:name
     h = self.to_hash
-    h[namevar] ||= h[:name]
-    h[:name]   ||= h[namevar]
+    name = h[namevar] || h[:name] || self.name
+    h[namevar] ||= name
+    h[:name]   ||= name
     h.values_at(*key_attributes.sort_by { |k| k.to_s })
   end
 
   def key_attributes
     resource_type.respond_to?(:key_attributes) ? resource_type.key_attributes : [:name]
+  end
+
+  # Convert our resource to yaml for Hiera purposes.
+  def to_hierayaml
+    # Collect list of attributes to align => and move ensure first
+    attr = parameters.keys
+    attr_max = attr.inject(0) { |max,k| k.to_s.length > max ? k.to_s.length : max }
+
+    attr.sort!
+    if attr.first != :ensure  && attr.include?(:ensure)
+      attr.delete(:ensure)
+      attr.unshift(:ensure)
+    end
+
+    attributes = attr.collect { |k|
+      v = parameters[k]
+      "    %-#{attr_max}s: %s\n" % [k, Puppet::Parameter.format_value_for_display(v)]
+    }.join
+
+    "  %s:\n%s" % [self.title, attributes]
   end
 
   # Convert our resource to Puppet code.
@@ -288,7 +404,8 @@ class Puppet::Resource
       "  %-#{attr_max}s => %s,\n" % [k, Puppet::Parameter.format_value_for_display(v)]
     }.join
 
-    "%s { '%s':\n%s}" % [self.type.to_s.downcase, self.title, attributes]
+    escaped = self.title.gsub(/'/,"\\\\'")
+    "%s { '%s':\n%s}" % [self.type.to_s.downcase, escaped, attributes]
   end
 
   def to_ref
@@ -298,11 +415,8 @@ class Puppet::Resource
   # Convert our resource to a RAL resource instance.  Creates component
   # instances for resource types that don't exist.
   def to_ral
-    if typeklass = Puppet::Type.type(self.type)
-      return typeklass.new(self)
-    else
-      return Puppet::Type::Component.new(self)
-    end
+    typeklass = Puppet::Type.type(self.type) || Puppet::Type.type(:component)
+    typeklass.new(self)
   end
 
   def name
@@ -314,54 +428,17 @@ class Puppet::Resource
 
   def missing_arguments
     resource_type.arguments.select do |param, default|
-      param = param.to_sym
-      parameters[param].nil? || parameters[param].value == :undef
+      the_param = parameters[param.to_sym]
+      the_param.nil? || the_param.value.nil? || the_param.value == :undef
     end
   end
   private :missing_arguments
 
-  # Consult external data bindings for class parameter values which must be
-  # namespaced in the backend.
-  #
-  # Example:
-  #
-  #   class foo($port=0){ ... }
-  #
-  # We make a request to the backend for the key 'foo::port' not 'foo'
-  #
-  def lookup_external_default_for(param, scope)
-    # Only lookup parameters for host classes
-    return nil unless resource_type.type == :hostclass
-
-    name = "#{resource_type.name}::#{param}"
-    # Lookup with injector (optionally), and if no value bound, lookup with "classic hiera"
-    result = nil
-    if scope.compiler.is_binder_active?
-      result = scope.compiler.injector.lookup(scope, name)
-    end
-    if result.nil?
-      lookup_with_databinding(name, scope)
-    else
-      result
-    end
-  end
-
-  private :lookup_external_default_for
-
-  def lookup_with_databinding(name, scope)
-    begin
-      Puppet::DataBinding.indirection.find(
-        name,
-        :environment => scope.environment.to_s,
-        :variables => scope)
-    rescue Puppet::DataBinding::LookupError => e
-      raise Puppet::Error.new("Error from DataBinding '#{Puppet[:data_binding_terminus]}' while looking up '#{name}': #{e.message}", e)
-    end
-  end
-
-  private :lookup_with_databinding
-
+  # @deprecated Not used by Puppet
+  # @api private
   def set_default_parameters(scope)
+    Puppet.deprecation_warning('The method Puppet::Resource.set_default_parameters is deprecated and will be removed in the next major release of Puppet.')
+
     return [] unless resource_type and resource_type.respond_to?(:arguments)
 
     unless is_a?(Puppet::Parser::Resource)
@@ -369,23 +446,28 @@ class Puppet::Resource
     end
 
     missing_arguments.collect do |param, default|
-      external_value = lookup_external_default_for(param, scope)
-
-      if external_value.nil? && default.nil?
-        next
-      elsif external_value.nil?
-        value = default.safeevaluate(scope)
-      else
-        value = external_value
+      rtype = resource_type
+      if rtype.type == :hostclass
+        using_bound_value = false
+        catch(:no_such_key) do
+          bound_value = Puppet::Pops::Lookup.search_and_merge("#{rtype.name}::#{param}", Puppet::Pops::Lookup::Invocation.new(scope), nil)
+          # Assign bound value but don't let an undef trump a default expression
+          unless bound_value.nil? && !default.nil?
+            self[param.to_sym] = bound_value
+            using_bound_value = true
+          end
+        end
       end
-
-      self[param.to_sym] = value
+      unless using_bound_value
+        next if default.nil?
+        self[param.to_sym] = default.safeevaluate(scope)
+      end
       param
     end.compact
   end
 
-  def to_resource
-    self
+  def copy_as_resource
+    Puppet::Resource.new(self)
   end
 
   def valid_parameter?(name)
@@ -396,17 +478,34 @@ class Puppet::Resource
   # have been provided with defaults.
   # Must be called after 'set_default_parameters'.  We can't join the methods
   # because Type#set_parameters needs specifically ordered behavior.
+  #
+  # @deprecated Not used by Puppet
+  # @api private
   def validate_complete
+    Puppet.deprecation_warning('The method Puppet::Resource.validate_complete is deprecated and will be removed in the next major release of Puppet.')
+
     return unless resource_type and resource_type.respond_to?(:arguments)
 
     resource_type.arguments.each do |param, default|
       param = param.to_sym
       fail Puppet::ParseError, "Must pass #{param} to #{self}" unless parameters.include?(param)
     end
+
+    # Perform optional type checking
+    arg_types = resource_type.argument_types
+    # Parameters is a map from name, to parameter, and the parameter again has name and value
+    parameters.each do |name, value|
+      next unless t = arg_types[name.to_s]  # untyped, and parameters are symbols here (aargh, strings in the type)
+      unless Puppet::Pops::Types::TypeCalculator.instance?(t, value.value)
+        inferred_type = Puppet::Pops::Types::TypeCalculator.infer_set(value.value)
+        actual = inferred_type.generalize()
+        fail Puppet::ParseError, "Expected parameter '#{name}' of '#{self}' to have type #{t.to_s}, got #{actual.to_s}"
+      end
+    end
   end
 
   def validate_parameter(name)
-    raise ArgumentError, "Invalid parameter #{name}" unless valid_parameter?(name)
+    raise Puppet::ParseError.new("no parameter named '#{name}'", file, line) unless valid_parameter?(name)
   end
 
   def prune_parameters(options = {})
@@ -425,6 +524,35 @@ class Puppet::Resource
     self
   end
 
+  # @api private
+  def self.type_and_title(type, title)
+    type, title = extract_type_and_title(type, title)
+    type = munge_type_name(type)
+    if type == TYPE_CLASS
+      title = title == '' ? :main : munge_type_name(title)
+    end
+    [type, title]
+  end
+
+
+  def self.extract_type_and_title(argtype, argtitle)
+    if (argtype.nil? || argtype == :component || argtype == :whit) &&
+          argtitle =~ /^([^\[\]]+)\[(.+)\]$/m                  then [ $1,                 $2            ]
+    elsif argtitle.nil? && argtype =~ /^([^\[\]]+)\[(.+)\]$/m  then [ $1,                 $2            ]
+    elsif argtitle                                             then [ argtype,            argtitle      ]
+    elsif argtype.is_a?(Puppet::Type)                          then [ argtype.class.name, argtype.title ]
+    else  raise ArgumentError, "No title provided and #{argtype.inspect} is not a valid resource reference"
+    end
+  end
+  private_class_method :extract_type_and_title
+
+  def self.munge_type_name(value)
+    return :main if value == :main
+    return TYPE_CLASS if value == '' || value.nil? || value.to_s.casecmp('component') == 0
+    Puppet::Pops::Types::TypeFormatter.singleton.capitalize_segments(value.to_s)
+  end
+  private_class_method :munge_type_name
+
   private
 
   # Produce a canonical method name.
@@ -439,7 +567,7 @@ class Puppet::Resource
   # The namevar for our resource type. If the type doesn't exist,
   # always use :name.
   def namevar
-    if builtin_type? and t = resource_type and t.key_attributes.length == 1
+    if builtin_type? && !(t = resource_type).nil? && t.key_attributes.length == 1
       t.key_attributes.first
     else
       :name
@@ -451,24 +579,6 @@ class Puppet::Resource
       validate_parameter(param) if strict?
       self[param] = value
     end
-  end
-
-  def extract_type_and_title(argtype, argtitle)
-    if    (argtitle || argtype) =~ /^([^\[\]]+)\[(.+)\]$/m then [ $1,                 $2            ]
-    elsif argtitle                                         then [ argtype,            argtitle      ]
-    elsif argtype.is_a?(Puppet::Type)                      then [ argtype.class.name, argtype.title ]
-    elsif argtype.is_a?(Hash)                              then
-      raise ArgumentError, "Puppet::Resource.new does not take a hash as the first argument. "+
-        "Did you mean (#{(argtype[:type] || argtype["type"]).inspect}, #{(argtype[:title] || argtype["title"]).inspect }) ?"
-    else raise ArgumentError, "No title provided and #{argtype.inspect} is not a valid resource reference"
-    end
-  end
-
-  def munge_type_name(value)
-    return :main if value == :main
-    return "Class" if value == "" or value.nil? or value.to_s.downcase == "component"
-
-    value.to_s.split("::").collect { |s| s.capitalize }.join("::")
   end
 
   def parse_title

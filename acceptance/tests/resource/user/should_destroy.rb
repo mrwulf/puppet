@@ -1,4 +1,6 @@
 test_name "should delete a user"
+confine :except, :platform => /^eos-/ # See ARISTA-37
+confine :except, :platform => /^cisco_/ # See PUP-5828
 
 name = "pl#{rand(999999).to_i}"
 
@@ -10,5 +12,8 @@ agents.each do |agent|
   on agent, puppet_resource('user', name, 'ensure=absent')
 
   step "verify the user was deleted"
+  fail_test "User #{name} was not deleted" if agent.user_list.include? name
+
+  step "delete the user, if any"
   agent.user_absent(name)
 end

@@ -19,9 +19,9 @@ Puppet::Type.type(:service).provide :runit, :parent => :daemontools do
 
     or this can be overriden in the service resource parameters::
 
-        service { "myservice":
-          provider => "runit",
-          path => "/path/to/daemons",
+        service { 'myservice':
+          provider => 'runit',
+          path     => '/path/to/daemons',
         }
 
     This provider supports out of the box:
@@ -39,10 +39,10 @@ Puppet::Type.type(:service).provide :runit, :parent => :daemontools do
   class << self
     # this is necessary to autodetect a valid resource
     # default path, since there is no standard for such directory.
-    def defpath(dummy_argument=:work_arround_for_ruby_GC_bug)
+    def defpath
       unless @defpath
         ["/etc/sv", "/var/lib/service"].each do |path|
-          if FileTest.exist?(path)
+          if Puppet::FileSystem.exist?(path)
             @defpath = path
             break
           end
@@ -57,7 +57,7 @@ Puppet::Type.type(:service).provide :runit, :parent => :daemontools do
   def servicedir
     unless @servicedir
       ["/service", "/etc/service","/var/service"].each do |path|
-        if FileTest.exist?(path)
+        if Puppet::FileSystem.exist?(path)
           @servicedir = path
           break
         end
@@ -73,7 +73,7 @@ Puppet::Type.type(:service).provide :runit, :parent => :daemontools do
       return :running if output =~ /^run: /
     rescue Puppet::ExecutionFailure => detail
       unless detail.message =~ /(warning: |runsv not running$)/
-        raise Puppet::Error.new( "Could not get status for service #{resource.ref}: #{detail}" )
+        raise Puppet::Error.new( "Could not get status for service #{resource.ref}: #{detail}", detail )
       end
     end
     :stopped
@@ -105,7 +105,7 @@ Puppet::Type.type(:service).provide :runit, :parent => :daemontools do
   # before a disable
   def disable
     # unlink the daemon symlink to disable it
-    File.unlink(self.service) if FileTest.symlink?(self.service)
+    Puppet::FileSystem.unlink(self.service) if Puppet::FileSystem.symlink?(self.service)
   end
 end
 

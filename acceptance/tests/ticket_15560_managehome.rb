@@ -14,7 +14,7 @@ EOM
 
 manifest_absent = <<-EOM
 user { '#{username}':
-  ensure     => present,
+  ensure     => absent,
   managehome => true,
 }
 EOM
@@ -25,7 +25,7 @@ agents.each do |host|
   deleteable_profile = true
 
   version = on(host, facter('operatingsystemrelease')).stdout.chomp
-  if version =~ /^5\.[012]/
+  if version =~ /^5\.[012]|2003/
     homedir = "C:/Documents and Settings/#{username}"
     deleteable_profile = false
   else

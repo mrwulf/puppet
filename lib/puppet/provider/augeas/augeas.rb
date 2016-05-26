@@ -5,7 +5,7 @@
 #   you may not use this file except in compliance with the License.
 #   You may obtain a copy of the License at
 #
-#       http://www.apache.org/licenses/LICENSE-2.0
+#       https://www.apache.org/licenses/LICENSE-2.0
 #
 #   Unless required by applicable law or agreed to in writing, software
 #   distributed under the License is distributed on an "AS IS" BASIS,
@@ -39,9 +39,12 @@ Puppet::Type.type(:augeas).provide(:augeas) do
     "rm" => [ :path ],
     "clear" => [ :path ],
     "clearm" => [ :path, :string ],
+    "touch" => [ :path ],
     "mv" => [ :path, :path ],
+    "rename" => [ :path, :string ],
     "insert" => [ :string, :string, :path ],
     "get" => [ :path, :comparator, :string ],
+    "values" => [ :path, :glob ],
     "defvar" => [ :string, :path ],
     "defnode" => [ :string, :path, :string ],
     "match" => [ :path, :glob ],
@@ -169,7 +172,7 @@ Puppet::Type.type(:augeas).provide(:augeas) do
       if resource[:incl]
         aug.set("/augeas/load/Xfm/lens", resource[:lens])
         aug.set("/augeas/load/Xfm/incl", resource[:incl])
-        restricted = true
+        restricted_metadata = "/augeas//error"
       elsif glob_avail and opt_ctx
         # Optimize loading if the context is given, requires the glob function
         # from Augeas 0.8.2 or up
@@ -178,14 +181,14 @@ Puppet::Type.type(:augeas).provide(:augeas) do
 
         if aug.match(load_path).size < aug.match("/augeas/load/*").size
           aug.rm(load_path)
-          restricted = true
+          restricted_metadata = "/augeas/files#{ctx_path}/error"
         else
           # This will occur if the context is less specific than any glob
           debug("Unable to optimize files loaded by context path, no glob matches")
         end
       end
       aug.load
-      print_load_errors(:warning => restricted)
+      print_load_errors(restricted_metadata)
     end
     @aug
   end
@@ -237,6 +240,54 @@ Puppet::Type.type(:augeas).provide(:augeas) do
       return_value = (result =~ regex)
     else
       return_value = (result.send(comparator, arg))
+    end
+    !!return_value
+  end
+
+  # Used by the need_to_run? method to process values filters. Returns
+  # true if there is a matched value, false if otherwise
+  def process_values(cmd_array)
+    return_value = false
+
+    #validate and tear apart the command
+    fail("Invalid command: #{cmd_array.join(" ")}") if cmd_array.length < 3
+    cmd = cmd_array.shift
+    path = cmd_array.shift
+
+    # Need to break apart the clause
+    clause_array = parse_commands(cmd_array.shift)[0]
+    verb = clause_array.shift
+
+    #Get the match paths from augeas
+    result = @aug.match(path) || []
+    fail("Error trying to get path '#{path}'") if (result == -1)
+
+    #Get the values of the match paths from augeas
+    values = result.collect{|r| @aug.get(r)}
+
+    case verb
+    when "include"
+      arg = clause_array.shift
+      return_value = values.include?(arg)
+    when "not_include"
+      arg = clause_array.shift
+      return_value = !values.include?(arg)
+    when "=="
+      begin
+        arg = clause_array.shift
+        new_array = eval arg
+        return_value = (values == new_array)
+      rescue
+        fail("Invalid array in command: #{cmd_array.join(" ")}")
+      end
+    when "!="
+      begin
+        arg = clause_array.shift
+        new_array = eval arg
+        return_value = (values != new_array)
+      rescue
+        fail("Invalid array in command: #{cmd_array.join(" ")}")
+      end
     end
     !!return_value
   end
@@ -308,7 +359,7 @@ Puppet::Type.type(:augeas).provide(:augeas) do
       load_path.flatten!
     end
 
-    if File.exists?("#{Puppet[:libdir]}/augeas/lenses")
+    if Puppet::FileSystem.exist?("#{Puppet[:libdir]}/augeas/lenses")
       load_path << "#{Puppet[:libdir]}/augeas/lenses"
     end
 
@@ -323,10 +374,10 @@ Puppet::Type.type(:augeas).provide(:augeas) do
     @aug.set("/augeas/save", mode)
   end
 
-  def print_load_errors(args={})
+  def print_load_errors(path)
     errors = @aug.match("/augeas//error")
     unless errors.empty?
-      if args[:warning]
+      if path && !@aug.match(path).empty?
         warning("Loading failed for one or more files, see debug for /augeas//error output")
       else
         debug("Loading failed for one or more files, output from /augeas//error:")
@@ -365,17 +416,16 @@ Puppet::Type.type(:augeas).provide(:augeas) do
         begin
           case command
           when "get"; return_value = process_get(cmd_array)
+          when "values"; return_value = process_values(cmd_array)
           when "match"; return_value = process_match(cmd_array)
           end
-        rescue SystemExit,NoMemoryError
-          raise
-        rescue Exception => e
+        rescue StandardError => e
           fail("Error sending command '#{command}' with params #{cmd_array[1..-1].inspect}/#{e.message}")
         end
       end
 
       unless force
-        # If we have a verison of augeas which is at least 0.3.6 then we
+        # If we have a version of augeas which is at least 0.3.6 then we
         # can make the changes now and see if changes were made.
         if return_value and versioncmp(get_augeas_version, "0.3.6") >= 0
           debug("Will attempt to save and only run if files changed")
@@ -385,7 +435,7 @@ Puppet::Type.type(:augeas).provide(:augeas) do
           save_result = @aug.save
           unless save_result
             print_put_errors
-            fail("Save failed with return code #{save_result}, see debug")
+            fail("Saving failed, see debug")
           end
 
           saved_files = @aug.match("/augeas/events/saved")
@@ -393,8 +443,8 @@ Puppet::Type.type(:augeas).provide(:augeas) do
             root = resource[:root].sub(/^\/$/, "")
             saved_files.map! {|key| @aug.get(key).sub(/^\/files/, root) }
             saved_files.uniq.each do |saved_file|
-              if Puppet[:show_diff]
-                notice "\n" + diff(saved_file, saved_file + ".augnew")
+              if Puppet[:show_diff] && @resource[:show_diff]
+                self.send(@resource[:loglevel], "\n" + diff(saved_file, saved_file + ".augnew"))
               end
               File.delete(saved_file + ".augnew")
             end
@@ -425,10 +475,10 @@ Puppet::Type.type(:augeas).provide(:augeas) do
     set_augeas_save_mode(SAVE_OVERWRITE) if versioncmp(get_augeas_version, "0.3.6") >= 0
     @aug.load
     do_execute_changes
-        unless @aug.save
-          print_put_errors
-          fail("Save failed with return code #{success}, see debug")
-        end
+    unless @aug.save
+      print_put_errors
+      fail("Save failed, see debug")
+    end
 
     :executed
   ensure
@@ -473,6 +523,12 @@ Puppet::Type.type(:augeas).provide(:augeas) do
             else
               fail("command '#{command}' not supported in installed version of ruby-augeas")
             end
+          when "touch"
+            debug("sending command '#{command}' (match, set) with params #{cmd_array.inspect}")
+            if aug.match(cmd_array[0]).empty?
+              rv = aug.clear(cmd_array[0])
+              fail("Error sending command '#{command}' with params #{cmd_array.inspect}") if (!rv)
+            end
           when "insert", "ins"
             label = cmd_array[0]
             where = cmd_array[1]
@@ -497,11 +553,13 @@ Puppet::Type.type(:augeas).provide(:augeas) do
             debug("sending command '#{command}' with params #{cmd_array.inspect}")
             rv = aug.mv(cmd_array[0], cmd_array[1])
             fail("Error sending command '#{command}' with params #{cmd_array.inspect}") if (rv == -1)
+          when "rename"
+            debug("sending command '#{command}' with params #{cmd_array.inspect}")
+            rv = aug.rename(cmd_array[0], cmd_array[1])
+            fail("Error sending command '#{command}' with params #{cmd_array.inspect}") if (rv == -1)
           else fail("Command '#{command}' is not supported")
         end
-      rescue SystemExit,NoMemoryError
-        raise
-      rescue Exception => e
+      rescue StandardError => e
         fail("Error sending command '#{command}' with params #{cmd_array.inspect}/#{e.message}")
       end
     end

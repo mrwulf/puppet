@@ -13,10 +13,12 @@
 # in /var/db/.puppet_appdmg_installed_<name>
 
 require 'puppet/provider/package'
+require 'puppet/util/plist' if Puppet.features.cfpropertylist?
 Puppet::Type.type(:package).provide(:appdmg, :parent => Puppet::Provider::Package) do
   desc "Package management which copies application bundles to a target."
 
   confine :operatingsystem => :darwin
+  confine :feature         => :cfpropertylist
 
   commands :hdiutil => "/usr/bin/hdiutil"
   commands :curl => "/usr/bin/curl"
@@ -49,19 +51,15 @@ Puppet::Type.type(:package).provide(:appdmg, :parent => Puppet::Provider::Packag
   end
 
   def self.installpkgdmg(source, name)
-    unless source =~ /\.dmg$/i
-      self.fail "Mac OS X PKG DMG's must specify a source string ending in .dmg"
-    end
     require 'open-uri'
-    require 'facter/util/plist'
     cached_source = source
     tmpdir = Dir.mktmpdir
     begin
       if %r{\A[A-Za-z][A-Za-z0-9+\-\.]*://} =~ cached_source
         cached_source = File.join(tmpdir, name)
         begin
-          curl "-o", cached_source, "-C", "-", "-k", "-L", "-s", "--url", source
-          Puppet.debug "Success: curl transfered [#{name}]"
+          curl "-o", cached_source, "-C", "-", "-L", "-s", "--url", source
+          Puppet.debug "Success: curl transferred [#{name}]"
         rescue Puppet::ExecutionFailure
           Puppet.debug "curl did not transfer [#{name}].  Falling back to slower open-uri transfer methods."
           cached_source = source
@@ -70,19 +68,22 @@ Puppet::Type.type(:package).provide(:appdmg, :parent => Puppet::Provider::Packag
 
       open(cached_source) do |dmg|
         xml_str = hdiutil "mount", "-plist", "-nobrowse", "-readonly", "-mountrandom", "/tmp", dmg.path
-          ptable = Plist::parse_xml xml_str
+          ptable = Puppet::Util::Plist::parse_plist(xml_str)
           # JJM Filter out all mount-paths into a single array, discard the rest.
           mounts = ptable['system-entities'].collect { |entity|
             entity['mount-point']
           }.select { |mountloc|; mountloc }
           begin
+            found_app = false
             mounts.each do |fspath|
               Dir.entries(fspath).select { |f|
                 f =~ /\.app$/i
               }.each do |pkg|
+                found_app = true
                 installapp("#{fspath}/#{pkg}", name, source)
               end
             end
+            Puppet.debug "Unable to find .app in .appdmg. #{name} will not be installed." if !found_app
           ensure
             hdiutil "eject", mounts[0]
           end
@@ -93,7 +94,7 @@ Puppet::Type.type(:package).provide(:appdmg, :parent => Puppet::Provider::Packag
   end
 
   def query
-    FileTest.exists?("/var/db/.puppet_appdmg_installed_#{@resource[:name]}") ? {:name => @resource[:name], :ensure => :present} : nil
+    Puppet::FileSystem.exist?("/var/db/.puppet_appdmg_installed_#{@resource[:name]}") ? {:name => @resource[:name], :ensure => :present} : nil
   end
 
   def install

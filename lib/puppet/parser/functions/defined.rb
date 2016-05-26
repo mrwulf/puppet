@@ -1,49 +1,131 @@
-# Test whether a given class or definition is defined
-Puppet::Parser::Functions::newfunction(:defined, :type => :rvalue, :arity => -2, :doc => "Determine whether
-  a given class or resource type is defined. This function can also determine whether a
-  specific resource has been declared. Returns true or false. Accepts class names,
-  type names, and resource references.
+Puppet::Parser::Functions::newfunction(
+  :defined,
+  :type => :rvalue,
+  :arity => -2,
+  :doc => <<DOC
+Determines whether a given class or resource type is defined and returns a Boolean
+value. You can also use `defined` to determine whether a specific resource is defined,
+or whether a variable has a value (including `undef`, as opposed to the variable never
+being declared or assigned).
 
-  The `defined` function checks both native and defined types, including types
-  provided as plugins via modules. Types and classes are both checked using their names:
+This function takes at least one string argument, which can be a class name, type name,
+resource reference, or variable reference of the form `'$name'`.
 
-      defined(\"file\")
-      defined(\"customtype\")
-      defined(\"foo\")
-      defined(\"foo::bar\")
+The `defined` function checks both native and defined types, including types
+provided by modules. Types and classes are matched by their names. The function matches 
+resource declarations by using resource references.
 
-  Resource declarations are checked using resource references, e.g.
-  `defined( File['/tmp/myfile'] )`. Checking whether a given resource
-  has been declared is, unfortunately, dependent on the parse order of
-  the configuration, and the following code will not work:
+**Examples**: Different types of `defined` function matches
 
-      if defined(File['/tmp/foo']) {
-          notify(\"This configuration includes the /tmp/foo file.\")
-      }
-      file {\"/tmp/foo\":
-          ensure => present,
-      }
+~~~ puppet
+# Matching resource types
+defined("file")
+defined("customtype")
 
-  However, this order requirement refers to parse order only, and ordering of
-  resources in the configuration graph (e.g. with `before` or `require`) does not
-  affect the behavior of `defined`.") do |vals|
-    result = false
-    vals = [vals] unless vals.is_a?(Array)
-    vals.each do |val|
-      case val
-      when String
-        if Puppet::Type.type(val) or find_definition(val) or find_hostclass(val)
-          result = true
-          break
-        end
-      when Puppet::Resource
-        if findresource(val.to_s)
-          result = true
-          break
-        end
+# Matching defines and classes
+defined("foo")
+defined("foo::bar")
+
+# Matching variables
+defined('$name')
+
+# Matching declared resources
+defined(File['/tmp/file'])
+~~~
+
+Puppet depends on the configuration's evaluation order when checking whether a resource
+is declared.
+
+**Example**: Importance of evaluation order when using `defined`
+
+~~~ puppet
+# Assign values to $is_defined_before and $is_defined_after using identical `defined`
+# functions.
+
+$is_defined_before = defined(File['/tmp/file'])
+
+file { "/tmp/file":
+  ensure => present,
+}
+
+$is_defined_after = defined(File['/tmp/file'])
+
+# $is_defined_before returns false, but $is_defined_after returns true.
+~~~
+
+This order requirement only refers to evaluation order. The order of resources in the
+configuration graph (e.g. with `before` or `require`) does not affect the `defined`
+function's behavior.
+
+> **Warning:** Avoid relying on the result of the `defined` function in modules, as you
+> might not be able to guarantee the evaluation order well enough to produce consistent
+> results. This can cause other code that relies on the function's result to behave
+> inconsistently or fail.
+
+If you pass more than one argument to `defined`, the function returns `true` if _any_
+of the arguments are defined. You can also match resources by type, allowing you to
+match conditions of different levels of specificity, such as whether a specific resource
+is of a specific data type.
+
+**Example**: Matching multiple resources and resources by different types with `defined`
+
+~~~ puppet
+file { "/tmp/file1":
+  ensure => file,
+}
+
+$tmp_file = file { "/tmp/file2":
+  ensure => file,
+}
+
+# Each of these statements return `true` ...
+defined(File['/tmp/file1'])
+defined(File['/tmp/file1'],File['/tmp/file2'])
+defined(File['/tmp/file1'],File['/tmp/file2'],File['/tmp/file3'])
+# ... but this returns `false`.
+defined(File['/tmp/file3'])
+
+# Each of these statements returns `true` ...
+defined(Type[Resource['file','/tmp/file2']])
+defined(Resource['file','/tmp/file2'])
+defined(File['/tmp/file2'])
+defined('$tmp_file')
+# ... but each of these returns `false`.
+defined(Type[Resource['exec','/tmp/file2']])
+defined(Resource['exec','/tmp/file2'])
+defined(File['/tmp/file3'])
+defined('$tmp_file2')
+~~~
+
+- Since 2.7.0
+- Since 3.6.0 variable reference and future parser types
+- Since 3.8.1 type specific requests with future parser
+- Since 4.0.0
+DOC
+) do |vals|
+  vals = [vals] unless vals.is_a?(Array)
+  vals.any? do |val|
+    case val
+    when String
+      if m = /^\$(.+)$/.match(val)
+        exist?(m[1])
       else
-        raise ArgumentError, "Invalid argument of type '#{val.class}' to 'defined'"
+        find_resource_type(val) || find_definition(val) || find_hostclass(val)
       end
+    when Puppet::Resource
+      compiler.findresource(val.type, val.title)
+    when Puppet::Pops::Types::PResourceType
+      raise ArgumentError, "The given resource type is a reference to all kind of types" if val.type_name.nil?
+      if val.title.nil?
+        find_builtin_resource_type(val.type_name) || find_definition(val.type_name)
+      else
+        compiler.findresource(val.type_name, val.title)
+      end
+    when Puppet::Pops::Types::PHostClassType
+      raise  ArgumentError, "The given class type is a reference to all classes" if val.class_name.nil?
+      find_hostclass(val.class_name)
+    else
+      raise ArgumentError, "Invalid argument of type '#{val.class}' to 'defined'"
     end
-    result
+  end
 end

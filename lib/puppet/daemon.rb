@@ -21,11 +21,15 @@ require 'puppet/scheduler'
 #
 # @api private
 class Puppet::Daemon
+  SIGNAL_CHECK_INTERVAL = 5
+
   attr_accessor :agent, :server, :argv
+  attr_reader :signals
 
   def initialize(pidfile, scheduler = Puppet::Scheduler::Scheduler.new())
     @scheduler = scheduler
     @pidfile = pidfile
+    @signals = []
   end
 
   def daemonname
@@ -84,12 +88,9 @@ class Puppet::Daemon
 
   def reload
     return unless agent
-    if agent.running?
-      Puppet.notice "Not triggering already-running agent"
-      return
-    end
-
     agent.run({:splay => false})
+  rescue Puppet::LockError
+    Puppet.notice "Not triggering already-running agent"
   end
 
   def restart
@@ -104,13 +105,21 @@ class Puppet::Daemon
   # Trap a couple of the main signals.  This should probably be handled
   # in a way that anyone else can register callbacks for traps, but, eh.
   def set_signal_traps
-    signals = {:INT => :stop, :TERM => :stop }
-    # extended signals not supported under windows
-    signals.update({:HUP => :restart, :USR1 => :reload, :USR2 => :reopen_logs }) unless Puppet.features.microsoft_windows?
-    signals.each do |signal, method|
+    [:INT, :TERM].each do |signal|
       Signal.trap(signal) do
-        Puppet.notice "Caught #{signal}; calling #{method}"
-        send(method)
+        Puppet.notice "Caught #{signal}; exiting"
+        stop
+      end
+    end
+
+    # extended signals not supported under windows
+    if !Puppet.features.microsoft_windows?
+      signals = {:HUP => :restart, :USR1 => :reload, :USR2 => :reopen_logs }
+      signals.each do |signal, method|
+        Signal.trap(signal) do
+          Puppet.notice "Caught #{signal}; storing #{method}"
+          @signals << method
+        end
       end
     end
   end
@@ -129,8 +138,6 @@ class Puppet::Daemon
   end
 
   def start
-    set_signal_traps
-
     create_pidfile
 
     raise Puppet::DevError, "Daemons must have an agent, server, or both" unless agent or server
@@ -173,10 +180,16 @@ class Puppet::Daemon
       end
     end
 
+    signal_loop = Puppet::Scheduler.create_job(SIGNAL_CHECK_INTERVAL) do
+      while method = @signals.shift
+        Puppet.notice "Processing #{method}"
+        send(method)
+      end
+    end
+
     reparse_run.disable if Puppet[:filetimeout] == 0
     agent_run.disable unless agent
 
-    @scheduler.run_loop([reparse_run, agent_run])
+    @scheduler.run_loop([reparse_run, agent_run, signal_loop])
   end
 end
-

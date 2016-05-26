@@ -48,6 +48,17 @@ class Puppet::Transaction::Report
   # @return [String] uuid
   attr_accessor :transaction_uuid
 
+  # The id of the code input to the compiler.
+  attr_accessor :code_id
+
+  # A master generated catalog uuid, useful for connecting a single catalog to multiple reports.
+  attr_accessor :catalog_uuid
+
+  # Whether a cached catalog was used in the run, and if so, the reason that it was used.
+  # @return [String] One of the values: 'not_used', 'explicitly_requested',
+  # or 'on_failure'
+  attr_accessor :cached_catalog_status
+
   # The host name for which the report is generated
   # @return [String] the host name
   attr_accessor :host
@@ -57,8 +68,7 @@ class Puppet::Transaction::Report
   attr_accessor :environment
 
   # A hash with a map from resource to status
-  # @return [Hash<{String => String}>] Resource name to status string.
-  # @todo Uncertain if the types in the hash are correct...
+  # @return [Hash{String => Puppet::Resource::Status}] Resource name to status.
   attr_reader :resource_statuses
 
   # A list of log messages.
@@ -98,7 +108,7 @@ class Puppet::Transaction::Report
   #
   attr_reader :report_format
 
-  def self.from_pson(data)
+  def self.from_data_hash(data)
     obj = self.allocate
     obj.initialize_from_hash(data)
     obj
@@ -123,8 +133,8 @@ class Puppet::Transaction::Report
   def add_metric(name, hash)
     metric = Puppet::Util::Metric.new(name)
 
-    hash.each do |name, value|
-      metric.newvalue(name, value)
+    hash.each do |metric_name, value|
+      metric.newvalue(metric_name, value)
     end
 
     @metrics[metric.name] = metric
@@ -173,10 +183,13 @@ class Puppet::Transaction::Report
     @host = Puppet[:node_name_value]
     @time = Time.now
     @kind = kind
-    @report_format = 4
+    @report_format = 5
     @puppet_version = Puppet.version
     @configuration_version = configuration_version
     @transaction_uuid = transaction_uuid
+    @code_id = nil
+    @catalog_uuid = nil
+    @cached_catalog_status = nil
     @environment = environment
     @status = 'failed' # assume failed until the report is finalized
   end
@@ -191,6 +204,19 @@ class Puppet::Transaction::Report
     @status = data['status']
     @host = data['host']
     @time = data['time']
+
+    if catalog_uuid = data['catalog_uuid']
+      @catalog_uuid = catalog_uuid
+    end
+
+    if code_id = data['code_id']
+      @code_id = code_id
+    end
+
+    if cached_catalog_status = data['cached_catalog_status']
+      @cached_catalog_status = cached_catalog_status
+    end
+
     if @time.is_a? String
       @time = Time.parse(@time)
     end
@@ -198,11 +224,11 @@ class Puppet::Transaction::Report
 
     @metrics = {}
     data['metrics'].each do |name, hash|
-      @metrics[name] = Puppet::Util::Metric.from_pson(hash)
+      @metrics[name] = Puppet::Util::Metric.from_data_hash(hash)
     end
 
     @logs = data['logs'].map do |record|
-      Puppet::Util::Log.from_pson(record)
+      Puppet::Util::Log.from_data_hash(record)
     end
 
     @resource_statuses = {}
@@ -210,18 +236,21 @@ class Puppet::Transaction::Report
       if record[1] == {}
         status = nil
       else
-        status = Puppet::Resource::Status.from_pson(record[1])
+        status = Puppet::Resource::Status.from_data_hash(record[1])
       end
       @resource_statuses[record[0]] = status
     end
   end
 
-  def to_pson
+  def to_data_hash
     {
       'host' => @host,
       'time' => @time.iso8601(9),
       'configuration_version' => @configuration_version,
       'transaction_uuid' => @transaction_uuid,
+      'catalog_uuid' => @catalog_uuid,
+      'code_id' => @code_id,
+      'cached_catalog_status' => @cached_catalog_status,
       'report_format' => @report_format,
       'puppet_version' => @puppet_version,
       'kind' => @kind,
@@ -231,7 +260,7 @@ class Puppet::Transaction::Report
       'logs' => @logs,
       'metrics' => @metrics,
       'resource_statuses' => @resource_statuses,
-    }.to_pson
+    }
   end
 
   # @return [String] the host name
@@ -282,8 +311,8 @@ class Puppet::Transaction::Report
     @metrics.each do |name, metric|
       key = metric.name.to_s
       report[key] = {}
-      metric.values.each do |name, label, value|
-        report[key][name.to_s] = value
+      metric.values.each do |metric_name, label, value|
+        report[key][metric_name.to_s] = value
       end
       report[key]["total"] = 0 unless key == "time" or report[key].include?("total")
     end
@@ -320,7 +349,7 @@ class Puppet::Transaction::Report
   end
 
   def self.default_format
-    Puppet[:report_serialization_format].intern
+    :pson
   end
 
   private

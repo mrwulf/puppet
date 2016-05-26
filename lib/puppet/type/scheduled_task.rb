@@ -92,31 +92,35 @@ Puppet::Type.newtype(:scheduled_task) do
       A trigger can contain the following keys:
 
       * For all triggers:
-          * `schedule` **(Required)** --- The schedule type. Valid values are
-            `daily`, `weekly`, `monthly`, or `once`.
+          * `schedule` **(Required)** --- What kind of trigger this is.
+            Valid values are `daily`, `weekly`, `monthly`, or `once`. Each kind
+            of trigger is configured with a different set of keys; see the
+            sections below. (`once` triggers only need a start time/date.)
           * `start_time` **(Required)** --- The time of day when the trigger should
             first become active. Several time formats will work, but we
             suggest 24-hour time formatted as HH:MM.
           * `start_date` ---  The date when the trigger should first become active.
-            Defaults to "today." Several date formats will work, including
-            special dates like "today," but we suggest formatting dates as
-            YYYY-MM-DD.
-      * For daily triggers:
+            Defaults to the current date. You should format dates as YYYY-MM-DD,
+            although other date formats may work. (Under the hood, this uses `Date.parse`.)
+          * `minutes_interval` --- The repeat interval in minutes.
+          * `minutes_duration` --- The duration in minutes, needs to be greater than the
+            minutes_interval.
+      * For `daily` triggers:
           * `every` --- How often the task should run, as a number of days. Defaults
             to 1. ("2" means every other day, "3" means every three days, etc.)
-      * For weekly triggers:
+      * For `weekly` triggers:
           * `every` --- How often the task should run, as a number of weeks. Defaults
             to 1. ("2" means every other week, "3" means every three weeks, etc.)
           * `day_of_week` --- Which days of the week the task should run, as an array.
             Defaults to all days. Each day must be one of `mon`, `tues`,
             `wed`, `thurs`, `fri`, `sat`, `sun`, or `all`.
-      * For monthly-by-date triggers:
+      * For `monthly` (by date) triggers:
           * `months` --- Which months the task should run, as an array. Defaults to
             all months. Each month must be an integer between 1 and 12.
           * `on` **(Required)** --- Which days of the month the task should run,
             as an array. Each day must beeither an integer between 1 and 31,
             or the special value `last,` which is always the last day of the month.
-      * For monthly-by-weekday triggers:
+      * For `monthly` (by weekday) triggers:
           * `months` --- Which months the task should run, as an array. Defaults to
             all months. Each month must be an integer between 1 and 12.
           * `day_of_week` **(Required)** --- Which day of the week the task should
@@ -126,13 +130,14 @@ Puppet::Type.newtype(:scheduled_task) do
             when the task should run. Must be one of `first`, `second`, `third`,
             `fourth`, `fifth`, or `last`.
 
+
       Examples:
 
           # Run at 8am on the 1st, 15th, and last day of the month in January, March,
           # May, July, September, and November, starting after August 31st, 2011.
           trigger => {
             schedule   => monthly,
-            start_date => '2011-08-31',   # Defaults to 'today'
+            start_date => '2011-08-31',   # Defaults to current date
             start_time => '08:00',        # Must be specified
             months     => [1,3,5,7,9,11], # Defaults to all
             on         => [1, 15, last],  # Must be specified
@@ -142,11 +147,20 @@ Puppet::Type.newtype(:scheduled_task) do
           # starting after August 31st, 2011.
           trigger => {
             schedule         => monthly,
-            start_date       => '2011-08-31', # Defaults to 'today'
+            start_date       => '2011-08-31', # Defaults to current date
             start_time       => '08:00',      # Must be specified
             months           => [1,3,5],      # Defaults to all
             which_occurrence => first,        # Must be specified
             day_of_week      => [mon],        # Must be specified
+          }
+
+          # Run daily repeating every 30 minutes between 9am and 5pm (480 minutes) starting after August 31st, 2011.
+          trigger => {
+            schedule         => daily,
+            start_date       => '2011-08-31', # Defaults to current date
+            start_time       => '8:00',       # Must be specified
+            minutes_interval => 30,
+            minutes_duration => 480,
           }
 
     EOT

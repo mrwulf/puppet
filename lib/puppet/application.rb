@@ -1,8 +1,8 @@
 require 'optparse'
 require 'puppet/util/command_line'
-require 'puppet/util/plugins'
 require 'puppet/util/constant_inflector'
 require 'puppet/error'
+require 'puppet/application_support'
 
 module Puppet
 
@@ -21,7 +21,7 @@ module Puppet
 #      Puppet::Application::Example.new.run
 #
 #
-# class Puppet::Application::Example << Puppet::Application
+# class Puppet::Application::Example < Puppet::Application
 #
 #     def preinit
 #         # perform some pre initialization
@@ -181,23 +181,6 @@ class Application
       result
     end
 
-    SHOULD_PARSE_CONFIG_DEPRECATION_MSG = "is no longer supported; config file parsing " +
-        "is now controlled by the puppet engine, rather than by individual applications.  This " +
-        "method will be removed in a future version of puppet."
-
-    def should_parse_config
-      Puppet.deprecation_warning("should_parse_config " + SHOULD_PARSE_CONFIG_DEPRECATION_MSG)
-    end
-
-    def should_not_parse_config
-      Puppet.deprecation_warning("should_not_parse_config " + SHOULD_PARSE_CONFIG_DEPRECATION_MSG)
-    end
-
-    def should_parse_config?
-      Puppet.deprecation_warning("should_parse_config? " + SHOULD_PARSE_CONFIG_DEPRECATION_MSG)
-      true
-    end
-
     # used to declare code that handle an option
     def option(*options, &block)
       long = options.find { |opt| opt =~ /^--/ }.gsub(/^--(?:\[no-\])?([^ =]+).*$/, '\1' ).gsub('-','_')
@@ -345,23 +328,20 @@ class Application
   def run
 
     # I don't really like the names of these lifecycle phases.  It would be nice to change them to some more meaningful
-    # names, and make deprecated aliases.  Also, Daniel suggests that we can probably get rid of this "plugin_hook"
-    # pattern, but we need to check with PE and the community first.  --cprice 2012-03-16
-    #
+    # names, and make deprecated aliases.  --cprice 2012-03-16
 
     exit_on_fail("get application-specific default settings") do
-      plugin_hook('initialize_app_defaults') { initialize_app_defaults }
+      initialize_app_defaults
     end
 
-    require 'puppet'
-    require 'puppet/util/instrumentation'
-    Puppet::Util::Instrumentation.init
+    Puppet::ApplicationSupport.push_application_context(self.class.run_mode)
 
-    exit_on_fail("initialize")                                   { plugin_hook('preinit')       { preinit } }
-    exit_on_fail("parse application options")                    { plugin_hook('parse_options') { parse_options } }
-    exit_on_fail("prepare for execution")                        { plugin_hook('setup')         { setup } }
+    exit_on_fail("initialize")                                   { preinit }
+    exit_on_fail("parse application options")                    { parse_options }
+    exit_on_fail("prepare for execution")                        { setup }
     exit_on_fail("configure routes from #{Puppet[:route_file]}") { configure_indirector_routes }
-    exit_on_fail("run")                                          { plugin_hook('run_command')   { run_command } }
+    exit_on_fail("log runtime debug info")                       { log_runtime_environment }
+    exit_on_fail("run")                                          { run_command }
   end
 
   def main
@@ -381,13 +361,18 @@ class Application
       Puppet::Util::Log.newdestination(:console)
     end
 
-    if options[:debug]
-      Puppet::Util::Log.level = :debug
-    elsif options[:verbose]
-      Puppet::Util::Log.level = :info
-    end
+    set_log_level
 
     Puppet::Util::Log.setup_default unless options[:setdest]
+  end
+
+  def set_log_level(opts = nil)
+    opts ||= options
+    if opts[:debug]
+      Puppet::Util::Log.level = :debug
+    elsif opts[:verbose] && !Puppet::Util::Log.sendlevel?(:info)
+      Puppet::Util::Log.level = :info
+    end
   end
 
   def handle_logdest_arg(arg)
@@ -400,12 +385,27 @@ class Application
   end
 
   def configure_indirector_routes
-    route_file = Puppet[:route_file]
-    if ::File.exists?(route_file)
-      routes = YAML.load_file(route_file)
-      application_routes = routes[name.to_s]
-      Puppet::Indirector.configure_routes(application_routes) if application_routes
-    end
+    Puppet::ApplicationSupport.configure_indirector_routes(name.to_s)
+  end
+
+  # Output basic information about the runtime environment for debugging
+  # purposes.
+  #
+  # @api public
+  #
+  # @param extra_info [Hash{String => #to_s}] a flat hash of extra information
+  #   to log. Intended to be passed to super by subclasses.
+  # @return [void]
+  def log_runtime_environment(extra_info=nil)
+    runtime_info = {
+      'puppet_version' => Puppet.version,
+      'ruby_version'   => RUBY_VERSION,
+      'run_mode'       => self.class.run_mode.name,
+    }
+    runtime_info['default_encoding'] = Encoding.default_external
+    runtime_info.merge!(extra_info) unless extra_info.nil?
+
+    Puppet.debug 'Runtime environment: ' + runtime_info.map{|k,v| k + '=' + v.to_s}.join(', ')
   end
 
   def parse_options
@@ -458,15 +458,5 @@ class Application
   def help
     "No help available for puppet #{name}"
   end
-
-
-
-  def plugin_hook(step,&block)
-    Puppet::Plugins.send("before_application_#{step}",:application_object => self)
-    x = yield
-    Puppet::Plugins.send("after_application_#{step}",:application_object => self, :return_value => x)
-    x
-  end
-  private :plugin_hook
 end
 end

@@ -1,14 +1,20 @@
 test_name "puppet module uninstall (with modulepath)"
 
+codedir = master.puppet('master')['codedir']
+
+teardown do
+  on master, "rm -rf #{codedir}/modules2"
+end
+
 step "Setup"
 apply_manifest_on master, <<-PP
 file {
   [
-    '/etc/puppet/modules2',
-    '/etc/puppet/modules2/crakorn',
-    '/etc/puppet/modules2/absolute',
+    '#{codedir}/modules2',
+    '#{codedir}/modules2/crakorn',
+    '#{codedir}/modules2/absolute',
   ]: ensure => directory;
-  '/etc/puppet/modules2/crakorn/metadata.json':
+  '#{codedir}/modules2/crakorn/metadata.json':
     content => '{
       "name": "jimmy/crakorn",
       "version": "0.4.0",
@@ -17,7 +23,7 @@ file {
       "license": "MIT",
       "dependencies": []
     }';
-  '/etc/puppet/modules2/absolute/metadata.json':
+  '#{codedir}/modules2/absolute/metadata.json':
     content => '{
       "name": "jimmy/absolute",
       "version": "0.4.0",
@@ -28,26 +34,25 @@ file {
     }';
 }
 PP
-teardown do
-  on master, "rm -rf /etc/puppet/modules2"
-end
-on master, '[ -d /etc/puppet/modules2/crakorn ]'
-on master, '[ -d /etc/puppet/modules2/absolute ]'
+
+on master, "[ -d #{codedir}/modules2/crakorn ]"
+on master, "[ -d #{codedir}/modules2/absolute ]"
 
 step "Try to uninstall the module jimmy-crakorn using relative modulepath"
-on master, 'cd /etc/puppet/modules2 && puppet module uninstall jimmy-crakorn --modulepath=.' do
-  assert_output <<-OUTPUT
-    \e[mNotice: Preparing to uninstall 'jimmy-crakorn' ...\e[0m
-    Removed 'jimmy-crakorn' (\e[0;36mv0.4.0\e[0m) from /etc/puppet/modules2
+on master, "cd #{codedir}/modules2 && puppet module uninstall jimmy-crakorn --modulepath=." do
+  assert_equal <<-OUTPUT, stdout
+\e[mNotice: Preparing to uninstall 'jimmy-crakorn' ...\e[0m
+Removed 'jimmy-crakorn' (\e[0;36mv0.4.0\e[0m) from #{codedir}/modules2
   OUTPUT
 end
-on master, '[ ! -d /etc/puppet/modules2/crakorn ]'
+
+on master, "[ ! -d #{codedir}/modules2/crakorn ]"
 
 step "Try to uninstall the module jimmy-absolute using an absolute modulepath"
-on master, 'cd /etc/puppet/modules2 && puppet module uninstall jimmy-absolute --modulepath=/etc/puppet/modules2' do
-  assert_output <<-OUTPUT
-    \e[mNotice: Preparing to uninstall 'jimmy-absolute' ...\e[0m
-    Removed 'jimmy-absolute' (\e[0;36mv0.4.0\e[0m) from /etc/puppet/modules2
+on master, "cd #{codedir}/modules2 && puppet module uninstall jimmy-absolute --modulepath=#{codedir}/modules2" do
+  assert_equal <<-OUTPUT, stdout
+\e[mNotice: Preparing to uninstall 'jimmy-absolute' ...\e[0m
+Removed 'jimmy-absolute' (\e[0;36mv0.4.0\e[0m) from #{codedir}/modules2
   OUTPUT
 end
-on master, '[ ! -d /etc/puppet/modules2/absolute ]'
+on master, "[ ! -d #{codedir}/modules2/absolute ]"

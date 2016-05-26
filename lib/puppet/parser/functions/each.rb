@@ -1,95 +1,104 @@
 Puppet::Parser::Functions::newfunction(
-:each,
-:type => :rvalue,
-:arity => 2,
-:doc => <<-'ENDHEREDOC') do |args|
-  Applies a parameterized block to each element in a sequence of selected entries from the first
-  argument and returns the first argument.
+  :each,
+  :type => :rvalue,
+  :arity => -3,
+  :doc => <<-DOC
+Runs a [lambda](http://docs.puppetlabs.com/puppet/latest/reference/lang_lambdas.html)
+repeatedly using each value in a data structure, then returns the values unchanged.
 
-  This function takes two mandatory arguments: the first should be an Array or a Hash, and the second
-  a parameterized block as produced by the puppet syntax:
+This function takes two mandatory arguments, in this order:
 
-        $a.each {|$x| ... }
+1. An array or hash the function will iterate over.
+2. A lambda, which the function calls for each element in the first argument. It can
+request one or two parameters.
 
-  When the first argument is an Array, the parameterized block should define one or two block parameters.
-  For each application of the block, the next element from the array is selected, and it is passed to
-  the block if the block has one parameter. If the block has two parameters, the first is the elements
-  index, and the second the value. The index starts from 0.
+**Example**: Using the `each` function
 
-        $a.each {|$index, $value| ... }
+`$data.each |$parameter| { <PUPPET CODE BLOCK> }`
 
-  When the first argument is a Hash, the parameterized block should define one or two parameters.
-  When one parameter is defined, the iteration is performed with each entry as an array of `[key, value]`,
-  and when two parameters are defined the iteration is performed with key and value.
+or
 
-        $a.each {|$entry|       ..."key ${$entry[0]}, value ${$entry[1]}" }
-        $a.each {|$key, $value| ..."key ${key}, value ${value}" }
+`each($data) |$parameter| { <PUPPET CODE BLOCK> }`
 
-  - Since 3.2
-  - requires `parser = future`.
-  ENDHEREDOC
-  require 'puppet/parser/ast/lambda'
+When the first argument (`$data` in the above example) is an array, Puppet passes each
+value in turn to the lambda, then returns the original values.
 
-  def foreach_Array(o, scope, pblock)
-    return nil unless pblock
+**Example**: Using the `each` function with an array and a one-parameter lambda
 
-    serving_size = pblock.parameter_count
-    if serving_size == 0
-      raise ArgumentError, "Block must define at least one parameter; value."
-    end
-    if serving_size > 2
-      raise ArgumentError, "Block must define at most two parameters; index, value"
-    end
-    enumerator = o.each
-    index = 0
-    if serving_size == 1
-      (o.size).times do
-        pblock.call(scope, enumerator.next)
-      end
-    else
-      (o.size).times do
-        pblock.call(scope, index, enumerator.next)
-        index = index +1
-      end
-    end
-    o
-  end
+~~~ puppet
+# For the array $data, run a lambda that creates a resource for each item.
+$data = ["routers", "servers", "workstations"]
+$data.each |$item| {
+ notify { $item:
+   message => $item
+ }
+}
+# Puppet creates one resource for each of the three items in $data. Each resource is
+# named after the item's value and uses the item's value in a parameter.
+~~~
 
-  def foreach_Hash(o, scope, pblock)
-    return nil unless pblock
-    serving_size = pblock.parameter_count
-    case serving_size
-    when 0
-      raise ArgumentError, "Block must define at least one parameter (for hash entry key)."
-    when 1
-    when 2
-    else
-      raise ArgumentError, "Block must define at most two parameters (for hash entry key and value)."
-    end
-    enumerator = o.each_pair
-    if serving_size == 1
-      (o.size).times do
-        pblock.call(scope, enumerator.next)
-      end
-    else
-      (o.size).times do
-        pblock.call(scope, *enumerator.next)
-      end
-    end
-    o
-  end
+When the first argument is a hash, Puppet passes each key and value pair to the lambda
+as an array in the form `[key, value]` and returns the original hash.
 
-  raise ArgumentError, ("each(): wrong number of arguments (#{args.length}; must be 2)") if args.length != 2
-  receiver = args[0]
-  pblock = args[1]
-  raise ArgumentError, ("each(): wrong argument type (#{args[1].class}; must be a parameterized block.") unless pblock.is_a? Puppet::Parser::AST::Lambda
+**Example**: Using the `each` function with a hash and a one-parameter lambda
 
-  case receiver
-  when Array
-    foreach_Array(receiver, self, pblock)
-  when Hash
-    foreach_Hash(receiver, self, pblock)
-  else
-    raise ArgumentError, ("each(): wrong argument type (#{args[0].class}; must be an Array or a Hash.")
-  end
+~~~ puppet
+# For the hash $data, run a lambda using each item as a key-value array that creates a
+# resource for each item.
+$data = {"rtr" => "Router", "svr" => "Server", "wks" => "Workstation"}
+$data.each |$items| {
+ notify { $items[0]:
+   message => $items[1]
+ }
+}
+# Puppet creates one resource for each of the three items in $data, each named after the
+# item's key and containing a parameter using the item's value.
+~~~
+
+When the first argument is an array and the lambda has two parameters, Puppet passes the
+array's indexes (enumerated from 0) in the first parameter and its values in the second
+parameter.
+
+**Example**: Using the `each` function with an array and a two-parameter lambda
+
+~~~ puppet
+# For the array $data, run a lambda using each item's index and value that creates a
+# resource for each item.
+$data = ["routers", "servers", "workstations"]
+$data.each |$index, $value| {
+ notify { $value:
+   message => $index
+ }
+}
+# Puppet creates one resource for each of the three items in $data, each named after the
+# item's value and containing a parameter using the item's index.
+~~~
+
+When the first argument is a hash, Puppet passes its keys to the first parameter and its
+values to the second parameter.
+
+**Example**: Using the `each` function with a hash and a two-parameter lambda
+
+~~~ puppet
+# For the hash $data, run a lambda using each item's key and value to create a resource
+# for each item.
+$data = {"rtr" => "Router", "svr" => "Server", "wks" => "Workstation"}
+$data.each |$key, $value| {
+ notify { $key:
+   message => $value
+ }
+}
+# Puppet creates one resource for each of the three items in $data, each named after the
+# item's key and containing a parameter using the item's value.
+~~~
+
+For an example that demonstrates how to create multiple `file` resources using `each`,
+see the Puppet
+[iteration](https://docs.puppetlabs.com/puppet/latest/reference/lang_iteration.html)
+documentation.
+
+- Since 4.0.0
+DOC
+) do |args|
+  function_fail(["each() is only available when parser/evaluator future is in effect"])
 end

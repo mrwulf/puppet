@@ -1,10 +1,10 @@
 test_name "#3961: puppet ca should produce certs spec"
 confine :except, :platform => 'windows'
+confine :except, :platform => /^eos-/
 
 target  = "working3961.example.org"
 
 expect = ['Signed certificate request for ca',
-          'Rebuilding inventory file',
           'working3961.example.org has a waiting certificate request',
           'Signed certificate request for working3961.example.org',
           'Removing file Puppet::SSL::CertificateRequest working3961.example.org']
@@ -27,5 +27,5 @@ agents.each do |agent|
   on agent, "test -f #{scratch}/ssl/certs/#{target}.pem"
 
   step "verify the private key for #{target} exists"
-  on agent, "grep -q 'BEGIN RSA PRIVATE KEY' #{scratch}/ssl/private_keys/#{target}.pem"
+  on agent, "grep 'BEGIN RSA PRIVATE KEY' #{scratch}/ssl/private_keys/#{target}.pem > /dev/null 2>&1"
 end

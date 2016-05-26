@@ -27,12 +27,22 @@ For instance the following manifest, with 'require' instead of 'include' would p
 Note that this function only works with clients 0.25 and later, and it will
 fail if used with earlier clients.
 
-") do |vals|
-  # Verify that the 'include' function is loaded
-  method = Puppet::Parser::Functions.function(:include)
+You must use the class's full name;
+relative names are not allowed. In addition to names in string form,
+you may also directly use Class and Resource Type values that are produced when evaluating
+resource and relationship expressions.
 
-  send(method, vals)
-  vals = [vals] unless vals.is_a?(Array)
+- Since 4.0.0 Class and Resource types, absolute names
+") do |vals|
+  # Make call patterns uniform and protected against nested arrays, also make
+  # names absolute if so desired.
+  vals = transform_and_assert_classnames(vals.is_a?(Array) ? vals.flatten : [vals])
+
+  # This is the same as calling the include function (but faster) since it again
+  # would otherwise need to perform the optional absolute name transformation
+  # (for no reason since they are already made absolute here).
+  #
+  compiler.evaluate_classes(vals, self, false)
 
   vals.each do |klass|
     # lookup the class in the scopes

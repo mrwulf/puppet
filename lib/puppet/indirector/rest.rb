@@ -3,13 +3,12 @@ require 'uri'
 
 require 'puppet/network/http'
 require 'puppet/network/http_pool'
-require 'puppet/network/http/api/v1'
-require 'puppet/network/http/compression'
 
 # Access objects via REST
 class Puppet::Indirector::REST < Puppet::Indirector::Terminus
-  include Puppet::Network::HTTP::API::V1
   include Puppet::Network::HTTP::Compression.module
+
+  IndirectedRoutes = Puppet::Network::HTTP::API::IndirectedRoutes
 
   class << self
     attr_reader :server_setting, :port_setting
@@ -44,7 +43,16 @@ class Puppet::Indirector::REST < Puppet::Indirector::Terminus
 
   # Provide appropriate headers.
   def headers
-    add_accept_encoding({"Accept" => model.supported_formats.join(", ")})
+    # yaml is not allowed on the network
+    network_formats = model.supported_formats.reject do |format|
+      [:yaml, :b64_zlib_yaml].include?(format)
+    end
+    common_headers = {
+      "Accept"                                     => network_formats.join(", "),
+      Puppet::Network::HTTP::HEADER_PUPPET_VERSION => Puppet.version
+    }
+
+    add_accept_encoding(common_headers)
   end
 
   def add_profiling_header(headers)
@@ -55,7 +63,8 @@ class Puppet::Indirector::REST < Puppet::Indirector::Terminus
   end
 
   def network(request)
-    Puppet::Network::HTTP::Connection.new(request.server || self.class.server, request.port || self.class.port)
+    Puppet::Network::HttpPool.http_instance(request.server || self.class.server,
+                                            request.port || self.class.port)
   end
 
   def http_get(request, path, headers = nil, *args)
@@ -84,37 +93,49 @@ class Puppet::Indirector::REST < Puppet::Indirector::Terminus
   end
 
   def find(request)
-    uri, body = request_to_uri_and_body(request)
+    uri, body = IndirectedRoutes.request_to_uri_and_body(request)
     uri_with_query_string = "#{uri}?#{body}"
 
-    response = do_request(request) do |request|
+    response = do_request(request) do |req|
       # WEBrick in Ruby 1.9.1 only supports up to 1024 character lines in an HTTP request
       # http://redmine.ruby-lang.org/issues/show/3991
       if "GET #{uri_with_query_string} HTTP/1.1\r\n".length > 1024
-        http_post(request, uri, body, headers)
+        uri_with_env = "#{uri}?environment=#{request.environment.name}"
+        http_post(req, uri_with_env, body, headers)
       else
-        http_get(request, uri_with_query_string, headers)
+        http_get(req, uri_with_query_string, headers)
       end
     end
 
     if is_http_200?(response)
-      check_master_version(response)
       content_type, body = parse_response(response)
       result = deserialize_find(content_type, body)
       result.name = request.key if result.respond_to?(:name=)
       result
+
+    elsif is_http_404?(response)
+      return nil unless request.options[:fail_on_404]
+
+      # 404 can get special treatment as the indirector API can not produce a meaningful
+      # reason to why something is not found - it may not be the thing the user is
+      # expecting to find that is missing, but something else (like the environment).
+      # While this way of handling the issue is not perfect, there is at least an error
+      # that makes a user aware of the reason for the failure.
+      #
+      content_type, body = parse_response(response)
+      msg = "Find #{elide(uri_with_query_string, 100)} resulted in 404 with the message: #{body}"
+      raise Puppet::Error, msg
     else
       nil
     end
   end
 
   def head(request)
-    response = do_request(request) do |request|
-      http_head(request, indirection2uri(request), headers)
+    response = do_request(request) do |req|
+      http_head(req, IndirectedRoutes.request_to_uri(req), headers)
     end
 
     if is_http_200?(response)
-      check_master_version(response)
       true
     else
       false
@@ -122,12 +143,11 @@ class Puppet::Indirector::REST < Puppet::Indirector::Terminus
   end
 
   def search(request)
-    response = do_request(request) do |request|
-      http_get(request, indirection2uri(request), headers)
+    response = do_request(request) do |req|
+      http_get(req, IndirectedRoutes.request_to_uri(req), headers)
     end
 
     if is_http_200?(response)
-      check_master_version(response)
       content_type, body = parse_response(response)
       deserialize_search(content_type, body) || []
     else
@@ -138,12 +158,11 @@ class Puppet::Indirector::REST < Puppet::Indirector::Terminus
   def destroy(request)
     raise ArgumentError, "DELETE does not accept options" unless request.options.empty?
 
-    response = do_request(request) do |request|
-      http_delete(request, indirection2uri(request), headers)
+    response = do_request(request) do |req|
+      http_delete(req, IndirectedRoutes.request_to_uri(req), headers)
     end
 
     if is_http_200?(response)
-      check_master_version(response)
       content_type, body = parse_response(response)
       deserialize_destroy(content_type, body)
     else
@@ -154,12 +173,11 @@ class Puppet::Indirector::REST < Puppet::Indirector::Terminus
   def save(request)
     raise ArgumentError, "PUT does not accept options" unless request.options.empty?
 
-    response = do_request(request) do |request|
-      http_put(request, indirection2uri(request), request.instance.render, headers.merge({ "Content-Type" => request.instance.mime }))
+    response = do_request(request) do |req|
+      http_put(req, IndirectedRoutes.request_to_uri(req), req.instance.render, headers.merge({ "Content-Type" => req.instance.mime }))
     end
 
     if is_http_200?(response)
-      check_master_version(response)
       content_type, body = parse_response(response)
       deserialize_save(content_type, body)
     else
@@ -174,7 +192,7 @@ class Puppet::Indirector::REST < Puppet::Indirector::Terminus
   # to request.do_request from here, thus if we change what we pass or how we
   # get it, we only need to change it here.
   def do_request(request)
-    request.do_request(self.class.srv_service, self.class.server, self.class.port) { |request| yield(request) }
+    request.do_request(self.class.srv_service, self.class.server, self.class.port) { |req| yield(req) }
   end
 
   def validate_key(request)
@@ -195,21 +213,13 @@ class Puppet::Indirector::REST < Puppet::Indirector::Terminus
     end
   end
 
+  def is_http_404?(response)
+    response.code == "404"
+  end
+
   def convert_to_http_error(response)
     message = "Error #{response.code} on SERVER: #{(response.body||'').empty? ? response.message : uncompress_body(response)}"
     Net::HTTPError.new(message, response)
-  end
-
-  def check_master_version response
-    if !response[Puppet::Network::HTTP::HEADER_PUPPET_VERSION] &&
-       (Puppet[:legacy_query_parameter_serialization] == false || Puppet[:report_serialization_format] != "yaml")
-      Puppet.notice "Using less secure serialization of reports and query parameters for compatibility"
-      Puppet.notice "with older puppet master. To remove this notice, please upgrade your master(s) "
-      Puppet.notice "to Puppet 3.3 or newer."
-      Puppet.notice "See http://links.puppetlabs.com/deprecate_yaml_on_network for more information."
-      Puppet[:legacy_query_parameter_serialization] = true
-      Puppet[:report_serialization_format] = "yaml"
-    end
   end
 
   # Returns the content_type, stripping any appended charset, and the
@@ -240,7 +250,11 @@ class Puppet::Indirector::REST < Puppet::Indirector::Terminus
     nil
   end
 
-  def environment
-    Puppet::Node::Environment.new
+  def elide(string, length)
+    if Puppet::Util::Log.level == :debug || string.length <= length
+      string
+    else
+      string[0, length - 3] + "..."
+    end
   end
 end

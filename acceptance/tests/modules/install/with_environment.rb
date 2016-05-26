@@ -1,38 +1,60 @@
 test_name 'puppet module install (with environment)'
+require 'puppet/acceptance/module_utils'
+extend Puppet::Acceptance::ModuleUtils
+
+tmpdir = master.tmpdir('module-install-with-environment')
+
+module_author = "pmtacceptance"
+module_name   = "nginx"
+
+orig_installed_modules = get_installed_modules_for_hosts hosts
+teardown do
+  rm_installed_modules_from_hosts orig_installed_modules, (get_installed_modules_for_hosts hosts)
+end
 
 step 'Setup'
 
 stub_forge_on(master)
 
-# Configure a non-default environment
-on master, 'rm -rf /usr/share/puppet/modules /etc/puppet/testenv'
-apply_manifest_on master, %q{
-  file {
-    [
-      '/usr/share/puppet/modules',
-      '/etc/puppet/testenv',
-      '/etc/puppet/testenv/modules',
-    ]:
-      ensure => directory,
-  }
-  file {
-    '/etc/puppet/puppet2.conf':
-      source => $settings::config,
-  }
-}
-on master, '{ echo "[testenv]"; echo "modulepath=/etc/puppet/testenv/modules"; } >> /etc/puppet/puppet2.conf'
-teardown do
-on master, 'rm -rf /usr/share/puppet/modules /etc/puppet/testenv /etc/puppet/puppet2.conf'
+puppet_conf = generate_base_directory_environments(tmpdir)
+
+check_module_install_in = lambda do |environment_path, module_install_args|
+  on(master, puppet("module install #{module_author}-#{module_name} --config=#{puppet_conf} #{module_install_args}")) do
+    assert_module_installed_ui(stdout, module_author, module_name)
+    assert_match(/#{environment_path}/, stdout,
+          "Notice of non default install path was not displayed")
+  end
+  assert_module_installed_on_disk(master, module_name, environment_path)
 end
 
-step 'Install a module into a non default environment'
-on master, 'puppet module install pmtacceptance-nginx --config=/etc/puppet/puppet2.conf --environment=testenv' do
-  assert_output <<-OUTPUT
-    \e[mNotice: Preparing to install into /etc/puppet/testenv/modules ...\e[0m
-    \e[mNotice: Downloading from https://forge.puppetlabs.com ...\e[0m
-    \e[mNotice: Installing -- do not interrupt ...\e[0m
-    /etc/puppet/testenv/modules
-    └── pmtacceptance-nginx (\e[0;36mv0.0.1\e[0m)
-  OUTPUT
+step 'Install a module into a non default directory environment' do
+  check_module_install_in.call("#{tmpdir}/environments/direnv/modules",
+                              "--environment=direnv")
 end
-on master, '[ -d /etc/puppet/testenv/modules/nginx ]'
+
+step 'Prepare a separate modulepath'
+modulepath_dir = master.tmpdir("modulepath")
+apply_manifest_on(master, <<-MANIFEST , :catch_failures => true)
+  file {
+    [
+      '#{tmpdir}/environments/production',
+      '#{modulepath_dir}',
+    ]:
+
+    ensure => directory,
+    owner => #{master.puppet['user']},
+  }
+MANIFEST
+
+step "Install a module into --modulepath #{modulepath_dir} despite the implicit production directory env existing" do
+  check_module_install_in.call(modulepath_dir, "--modulepath=#{modulepath_dir}")
+end
+
+step "Uninstall so we can try a different scenario" do
+  on(master, puppet("module uninstall #{module_author}-#{module_name} --config=#{puppet_conf} --modulepath=#{modulepath_dir}"))
+end
+
+step "Install a module into --modulepath #{modulepath_dir} with a directory env specified" do
+  check_module_install_in.call(modulepath_dir,
+                               "--modulepath=#{modulepath_dir} --environment=direnv")
+end

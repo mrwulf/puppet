@@ -1,12 +1,19 @@
+require 'shellwords'
+
 class Puppet::ModuleTool::Tar::Gnu
   def unpack(sourcefile, destdir, owner)
-    Puppet::Util::Execution.execute("tar xzf #{sourcefile} --no-same-permissions --no-same-owner -C #{destdir}")
-    Puppet::Util::Execution.execute("find #{destdir} -type d -exec chmod 755 {} +")
-    Puppet::Util::Execution.execute("find #{destdir} -type f -exec chmod 644 {} +")
-    Puppet::Util::Execution.execute("chown -R #{owner} #{destdir}")
+    sourcefile = File.expand_path(sourcefile)
+    destdir = File.expand_path(destdir)
+
+    Dir.chdir(destdir) do
+      Puppet::Util::Execution.execute("gzip -dc #{Shellwords.shellescape(sourcefile)} | tar xof -")
+      Puppet::Util::Execution.execute("find . -type d -exec chmod 755 {} +")
+      Puppet::Util::Execution.execute("find . -type f -exec chmod u+rw,g+r,a-st {} +")
+      Puppet::Util::Execution.execute("chown -R #{owner} .")
+    end
   end
 
   def pack(sourcedir, destfile)
-    Puppet::Util::Execution.execute("tar cf - #{sourcedir} | gzip -c > #{destfile}")
+    Puppet::Util::Execution.execute("tar cf - #{sourcedir} | gzip -c > #{File.basename(destfile)}")
   end
 end

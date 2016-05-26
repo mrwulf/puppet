@@ -40,17 +40,39 @@ class Puppet::Pops::Binder::BindingsModelDumper < Puppet::Pops::Model::TreeDumpe
     result
   end
 
+  def dump_Injector o
+    result = ['injector', :indent,
+      :break,
+      ['entries', do_dump(o.instance_variable_get('@impl').instance_variable_get('@entries'))],
+      :dedent
+    ]
+    result
+  end
+
+  def dump_InjectorEntry o
+    result = ['entry', :indent]
+    result << :break
+    result << ['precedence', o.precedence]
+    result << :break
+    result << ['binding', do_dump(o.binding)]
+    result << :break
+    result << ['producer', do_dump(o.cached_producer)]
+    result << :dedent
+    result
+  end
 
   def dump_Array o
     o.collect {|e| do_dump(e) }
   end
 
-  def dump_ASTArray o
-    ["[]"] + o.children.collect {|x| do_dump(x)}
-  end
-
-  def dump_ASTHash o
-    ["{}"] + o.value.sort_by{|k,v| k.to_s}.collect {|x| [do_dump(x[0]), do_dump(x[1])]}
+  def dump_Hash o
+    result = ["hash", :indent]
+    o.each do |elem|
+      result << :break
+      result << ["=>", :indent, do_dump(elem[0]), :break, do_dump(elem[1]), :dedent]
+    end
+    result << :dedent
+    result
   end
 
   def dump_Integer o
@@ -93,7 +115,7 @@ class Puppet::Pops::Binder::BindingsModelDumper < Puppet::Pops::Model::TreeDumpe
     result << expression_dumper.dump(o.expression)
   end
 
-  def dump_InstanceProducerDescriptor
+  def dump_InstanceProducerDescriptor o
     # TODO: o.arguments, o. transformer
     ['instance', o.class_name]
   end
@@ -109,7 +131,7 @@ class Puppet::Pops::Binder::BindingsModelDumper < Puppet::Pops::Model::TreeDumpe
     ['lookup', do_dump(o.type), o.name]
   end
 
-  def dump_PObjectType o
+  def dump_PAnyType o
     type_calculator.string(o)
   end
 
@@ -138,22 +160,28 @@ class Puppet::Pops::Binder::BindingsModelDumper < Puppet::Pops::Model::TreeDumpe
   end
 
   def dump_Binding o
-    result = ['bind']
+    result = ['bind', :indent]
     result << 'override' if o.override
     result << 'abstract' if o.abstract
     result.concat([do_dump(o.type), o.name])
+    result << :break
     result << "(in #{o.multibind_id})" if o.multibind_id
+    result << :break
     result << ['to', do_dump(o.producer)] + do_dump(o.producer_args)
+    result << :dedent
     result
   end
 
   def dump_Multibinding o
-    result = ['multibind', o.id]
+    result = ['multibind', o.id, :indent]
     result << 'override' if o.override
     result << 'abstract' if o.abstract
     result.concat([do_dump(o.type), o.name])
+    result << :break
     result << "(in #{o.multibind_id})" if o.multibind_id
+    result << :break
     result << ['to', do_dump(o.producer)] + do_dump(o.producer_args)
+    result << :dedent
     result
   end
 
@@ -163,20 +191,6 @@ class Puppet::Pops::Binder::BindingsModelDumper < Puppet::Pops::Model::TreeDumpe
 
   def dump_NamedBindings o
     result = ['named-bindings', o.name, :indent]
-    o.bindings.each do |b|
-      result << :break
-      result << do_dump(b)
-    end
-    result << :dedent
-    result
-  end
-
-  def dump_Category o
-    ['category', o.categorization, do_dump(o.value)]
-  end
-
-  def dump_CategorizedBindings o
-    result = ['when', do_dump(o.predicates), :indent]
     o.bindings.each do |b|
       result << :break
       result << do_dump(b)
@@ -195,11 +209,7 @@ class Puppet::Pops::Binder::BindingsModelDumper < Puppet::Pops::Model::TreeDumpe
     result
   end
 
-  def dump_EffectiveCategories o
-    ['categories', do_dump(o.categories)]
-  end
-
   def dump_ContributedBindings o
-    ['contributed', o.name, do_dump(o.effective_categories), do_dump(o.bindings)]
+    ['contributed', o.name, do_dump(o.bindings)]
   end
 end

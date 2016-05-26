@@ -1,15 +1,14 @@
 # A module to collect utility functions.
 
 require 'English'
-require 'puppet/external/lock'
 require 'puppet/error'
 require 'puppet/util/execution_stub'
 require 'uri'
-require 'tempfile'
 require 'pathname'
 require 'ostruct'
 require 'puppet/util/platform'
 require 'puppet/util/symbolic_file_mode'
+require 'puppet/file_system/uniquefile'
 require 'securerandom'
 
 module Puppet
@@ -22,33 +21,118 @@ module Util
   require 'puppet/util/posix'
   extend Puppet::Util::POSIX
 
+  # Can't use Puppet.features.microsoft_windows? as it may be mocked out in a test.  This can cause test recurring test failures
+  require 'puppet/util/windows/process' if Puppet::Util::Platform.windows?
+
   extend Puppet::Util::SymbolicFileMode
 
-  def self.activerecord_version
-    if (defined?(::ActiveRecord) and defined?(::ActiveRecord::VERSION) and defined?(::ActiveRecord::VERSION::MAJOR) and defined?(::ActiveRecord::VERSION::MINOR))
-      ([::ActiveRecord::VERSION::MAJOR, ::ActiveRecord::VERSION::MINOR].join('.').to_f)
+  def default_env
+    Puppet.features.microsoft_windows? ?
+      :windows :
+      :posix
+  end
+  module_function :default_env
+
+  # @param name [String] The name of the environment variable to retrieve
+  # @param mode [Symbol] Which operating system mode to use e.g. :posix or :windows.  Use nil to autodetect
+  # @return [String] Value of the specified environment variable.  nil if it does not exist
+  # @api private
+  def get_env(name, mode = default_env)
+    if mode == :windows
+      Puppet::Util::Windows::Process.get_environment_strings.each do |key, value |
+        if name.casecmp(key) == 0 then
+          return value
+        end
+      end
+      return nil
     else
-      0
+      ENV[name]
     end
   end
+  module_function :get_env
 
+  # @param mode [Symbol] Which operating system mode to use e.g. :posix or :windows.  Use nil to autodetect
+  # @return [Hash] A hashtable of all environment variables
+  # @api private
+  def get_environment(mode = default_env)
+    case mode
+      when :posix
+        ENV.to_hash
+      when :windows
+        Puppet::Util::Windows::Process.get_environment_strings
+      else
+        raise "Unable to retrieve the environment for mode #{mode}"
+    end
+  end
+  module_function :get_environment
+
+  # Removes all environment variables
+  # @param mode [Symbol] Which operating system mode to use e.g. :posix or :windows.  Use nil to autodetect
+  # @api private
+  def clear_environment(mode = default_env)
+    case mode
+      when :posix
+        ENV.clear
+      when :windows
+        Puppet::Util::Windows::Process.get_environment_strings.each do |key, _|
+          Puppet::Util::Windows::Process.set_environment_variable(key, nil)
+        end
+      else
+        raise "Unable to clear the environment for mode #{mode}"
+    end
+  end
+  module_function :clear_environment
+
+  # @param name [String] The name of the environment variable to set
+  # @param value [String] The value to set the variable to.  nil deletes the environment variable
+  # @param mode [Symbol] Which operating system mode to use e.g. :posix or :windows.  Use nil to autodetect
+  # @api private
+  def set_env(name, value = nil, mode = default_env)
+    case mode
+      when :posix
+        ENV[name] = value
+      when :windows
+        Puppet::Util::Windows::Process.set_environment_variable(name,value)
+      else
+        raise "Unable to set the environment variable #{name} for mode #{mode}"
+    end
+  end
+  module_function :set_env
+
+  # @param name [Hash] Environment variables to merge into the existing environment.  nil values will remove the variable
+  # @param mode [Symbol] Which operating system mode to use e.g. :posix or :windows.  Use nil to autodetect
+  # @api private
+  def merge_environment(env_hash, mode = default_env)
+    case mode
+      when :posix
+        env_hash.each { |name, val| ENV[name.to_s] = val }
+      when :windows
+        env_hash.each do |name, val|
+          Puppet::Util::Windows::Process.set_environment_variable(name.to_s, val)
+        end
+      else
+        raise "Unable to merge given values into the current environment for mode #{mode}"
+    end
+  end
+  module_function :merge_environment
 
   # Run some code with a specific environment.  Resets the environment back to
   # what it was at the end of the code.
-  def self.withenv(hash)
-    saved = ENV.to_hash
-    hash.each do |name, val|
-      ENV[name.to_s] = val
-    end
-
+  # Windows can store unicode chars in the environment as keys or values, but
+  # Rubys ENV tries to roundtrip them through the local codepage, which can
+  # cause encoding problems - underlying helpers use Windows APIs on Windows
+  # see https://bugs.ruby-lang.org/issues/8822
+  def withenv(hash, mode = :posix)
+    saved = get_environment(mode)
+    merge_environment(hash, mode)
     yield
   ensure
-    ENV.clear
-    saved.each do |name, val|
-      ENV[name] = val
+    if saved
+      clear_environment(mode)
+      merge_environment(saved, mode)
     end
   end
-
+  module_function :withenv
 
   # Execute a given chunk of code with a new umask.
   def self.withumask(mask)
@@ -112,29 +196,6 @@ module Util
     }
   end
 
-  # Proxy a bunch of methods to another object.
-  def self.classproxy(klass, objmethod, *methods)
-    classobj = class << klass; self; end
-    methods.each do |method|
-      classobj.send(:define_method, method) do |*args|
-        obj = self.send(objmethod)
-
-        obj.send(method, *args)
-      end
-    end
-  end
-
-  # Proxy a bunch of methods to another object.
-  def self.proxy(klass, objmethod, *methods)
-    methods.each do |method|
-      klass.send(:define_method, method) do |*args|
-        obj = self.send(objmethod)
-
-        obj.send(method, *args)
-      end
-    end
-  end
-
   def benchmark(*args)
     msg = args.pop
     level = args.pop
@@ -180,14 +241,16 @@ module Util
     if absolute_path?(bin)
       return bin if FileTest.file? bin and FileTest.executable? bin
     else
-      ENV['PATH'].split(File::PATH_SEPARATOR).each do |dir|
+      exts = Puppet::Util.get_env('PATHEXT')
+      exts = exts ? exts.split(File::PATH_SEPARATOR) : %w[.COM .EXE .BAT .CMD]
+      Puppet::Util.get_env('PATH').split(File::PATH_SEPARATOR).each do |dir|
         begin
           dest = File.expand_path(File.join(dir, bin))
         rescue ArgumentError => e
           # if the user's PATH contains a literal tilde (~) character and HOME is not set, we may get
           # an ArgumentError here.  Let's check to see if that is the case; if not, re-raise whatever error
           # was thrown.
-          if e.to_s =~ /HOME/ and (ENV['HOME'].nil? || ENV['HOME'] == "")
+          if e.to_s =~ /HOME/ and (Puppet::Util.get_env('HOME').nil? || Puppet::Util.get_env('HOME') == "")
             # if we get here they have a tilde in their PATH.  We'll issue a single warning about this and then
             # ignore this path element and carry on with our lives.
             Puppet::Util::Warnings.warnonce("PATH contains a ~ character, and HOME is not set; ignoring PATH element '#{dir}'.")
@@ -199,8 +262,6 @@ module Util
           end
         else
           if Puppet.features.microsoft_windows? && File.extname(dest).empty?
-            exts = ENV['PATHEXT']
-            exts = exts ? exts.split(File::PATH_SEPARATOR) : %w[.COM .EXE .BAT .CMD]
             exts.each do |ext|
               destext = File.expand_path(dest + ext)
               return destext if FileTest.file? destext and FileTest.executable? destext
@@ -264,7 +325,7 @@ module Util
     begin
       URI::Generic.build(params)
     rescue => detail
-      raise Puppet::Error, "Failed to convert '#{path}' to URI: #{detail}"
+      raise Puppet::Error, "Failed to convert '#{path}' to URI: #{detail}", detail.backtrace
     end
   end
   module_function :path_to_uri
@@ -293,24 +354,21 @@ module Util
       $stdout.reopen(stdout)
       $stderr.reopen(stderr)
 
-      3.upto(256){|fd| IO::new(fd).close rescue nil}
+      begin
+        Dir.foreach('/proc/self/fd') do |f|
+          if f != '.' && f != '..' && f.to_i >= 3
+            IO::new(f.to_i).close rescue nil
+          end
+        end
+      rescue Errno::ENOENT # /proc/self/fd not found
+        3.upto(256){|fd| IO::new(fd).close rescue nil}
+      end
 
       block.call if block
     end
     child_pid
   end
   module_function :safe_posix_fork
-
-  def memory
-    unless defined?(@pmap)
-      @pmap = which('pmap')
-    end
-    if @pmap
-      %x{#{@pmap} #{Process.pid}| grep total}.chomp.sub(/^\s*total\s+/, '').sub(/K$/, '').to_i
-    else
-      0
-    end
-  end
 
   def symbolizehash(hash)
     newhash = {}
@@ -331,13 +389,7 @@ module Util
     seconds
   end
 
-  module_function :memory, :thinmark
-
-  # Because IO#binread is only available in 1.9
-  def binread(file)
-    File.open(file, 'rb') { |f| f.read }
-  end
-  module_function :binread
+  module_function :thinmark
 
   # utility method to get the current call stack and format it to a human-readable string (which some IDEs/editors
   # will recognize as links to the line numbers in the trace)
@@ -375,95 +427,99 @@ module Util
   # exist; if the file is present we copy the existing mode/owner/group values
   # across. The default_mode can be expressed as an octal integer, a numeric string (ie '0664')
   # or a symbolic file mode.
+
+  DEFAULT_POSIX_MODE = 0644
+  DEFAULT_WINDOWS_MODE = nil
+
   def replace_file(file, default_mode, &block)
     raise Puppet::DevError, "replace_file requires a block" unless block_given?
 
-    unless valid_symbolic_mode?(default_mode)
-      raise Puppet::DevError, "replace_file default_mode: #{default_mode} is invalid"
-    end
-    mode = symbolic_mode_to_int(normalize_symbolic_mode(default_mode))
+    if default_mode
+      unless valid_symbolic_mode?(default_mode)
+        raise Puppet::DevError, "replace_file default_mode: #{default_mode} is invalid"
+      end
 
-    file     = Pathname(file)
-    tempfile = Tempfile.new(file.basename.to_s, file.dirname.to_s)
-
-    # Set properties of the temporary file before we write the content, because
-    # Tempfile doesn't promise to be safe from reading by other people, just
-    # that it avoids races around creating the file.
-    #
-    # Our Windows emulation is pretty limited, and so we have to carefully
-    # and specifically handle the platform, which has all sorts of magic.
-    # So, unlike Unix, we don't pre-prep security; we use the default "quite
-    # secure" tempfile permissions instead.  Magic happens later.
-    unless Puppet.features.microsoft_windows?
-      # Grab the current file mode, and fall back to the defaults.
-      stat = file.lstat rescue OpenStruct.new(:mode => mode,
-                                              :uid  => Process.euid,
-                                              :gid  => Process.egid)
-
-      # We only care about the bottom four slots, which make the real mode,
-      # and not the rest of the platform stat call fluff and stuff.
-      tempfile.chmod(stat.mode & 07777)
-      tempfile.chown(stat.uid, stat.gid)
+      mode = symbolic_mode_to_int(normalize_symbolic_mode(default_mode))
+    else
+      if Puppet.features.microsoft_windows?
+        mode = DEFAULT_WINDOWS_MODE
+      else
+        mode = DEFAULT_POSIX_MODE
+      end
     end
 
-    # OK, now allow the caller to write the content of the file.
-    yield tempfile
-
-    # Now, make sure the data (which includes the mode) is safe on disk.
-    tempfile.flush
     begin
-      tempfile.fsync
-    rescue NotImplementedError
-      # fsync may not be implemented by Ruby on all platforms, but
-      # there is absolutely no recovery path if we detect that.  So, we just
-      # ignore the return code.
+      file     = Puppet::FileSystem.pathname(file)
+      tempfile = Puppet::FileSystem::Uniquefile.new(Puppet::FileSystem.basename_string(file), Puppet::FileSystem.dir_string(file))
+
+      # Set properties of the temporary file before we write the content, because
+      # Tempfile doesn't promise to be safe from reading by other people, just
+      # that it avoids races around creating the file.
       #
-      # However, don't be fooled: that is accepting that we are running in
-      # an unsafe fashion.  If you are porting to a new platform don't stub
-      # that out.
-    end
-
-    tempfile.close
-
-    if Puppet.features.microsoft_windows?
-      # This will appropriately clone the file, but only if the file we are
-      # replacing exists.  Which is kind of annoying; thanks Microsoft.
-      #
-      # So, to avoid getting into an infinite loop we will retry once if the
-      # file doesn't exist, but only the once...
-      have_retried = false
-
-      begin
-        # Yes, the arguments are reversed compared to the rename in the rest
-        # of the world.
-        Puppet::Util::Windows::File.replace_file(file, tempfile.path)
-      rescue Puppet::Util::Windows::Error
-        # This might race, but there are enough possible cases that there
-        # isn't a good, solid "better" way to do this, and the next call
-        # should fail in the same way anyhow.
-        raise if have_retried or File.exist?(file)
-        have_retried = true
-
-        # OK, so, we can't replace a file that doesn't exist, so let us put
-        # one in place and set the permissions.  Then we can retry and the
-        # magic makes this all work.
-        #
-        # This is the least-worst option for handling Windows, as far as we
-        # can determine.
-        File.open(file, 'a') do |fh|
-          # this space deliberately left empty for auto-close behaviour,
-          # append mode, and not actually changing any of the content.
+      # Our Windows emulation is pretty limited, and so we have to carefully
+      # and specifically handle the platform, which has all sorts of magic.
+      # So, unlike Unix, we don't pre-prep security; we use the default "quite
+      # secure" tempfile permissions instead.  Magic happens later.
+      if !Puppet.features.microsoft_windows?
+        # Grab the current file mode, and fall back to the defaults.
+        effective_mode =
+        if Puppet::FileSystem.exist?(file)
+          stat = Puppet::FileSystem.lstat(file)
+          tempfile.chown(stat.uid, stat.gid)
+          stat.mode
+        else
+          mode
         end
 
-        # Set the permissions to what we want.
-        Puppet::Util::Windows::Security.set_mode(mode, file.to_s)
-
-        # ...and finally retry the operation.
-        retry
+        if effective_mode
+          # We only care about the bottom four slots, which make the real mode,
+          # and not the rest of the platform stat call fluff and stuff.
+          tempfile.chmod(effective_mode & 07777)
+        end
       end
-    else
-      File.rename(tempfile.path, file.to_s)
+
+      # OK, now allow the caller to write the content of the file.
+      yield tempfile
+
+      # Now, make sure the data (which includes the mode) is safe on disk.
+      tempfile.flush
+      begin
+        tempfile.fsync
+      rescue NotImplementedError
+        # fsync may not be implemented by Ruby on all platforms, but
+        # there is absolutely no recovery path if we detect that.  So, we just
+        # ignore the return code.
+        #
+        # However, don't be fooled: that is accepting that we are running in
+        # an unsafe fashion.  If you are porting to a new platform don't stub
+        # that out.
+      end
+
+      tempfile.close
+
+      if Puppet.features.microsoft_windows?
+        # Windows ReplaceFile needs a file to exist, so touch handles this
+        if !Puppet::FileSystem.exist?(file)
+          Puppet::FileSystem.touch(file)
+          if mode
+            Puppet::Util::Windows::Security.set_mode(mode, Puppet::FileSystem.path_string(file))
+          end
+        end
+        # Yes, the arguments are reversed compared to the rename in the rest
+        # of the world.
+        Puppet::Util::Windows::File.replace_file(FileSystem.path_string(file), tempfile.path)
+
+      else
+        File.rename(tempfile.path, Puppet::FileSystem.path_string(file))
+      end
+    ensure
+      # in case an error occurred before we renamed the temp file, make sure it
+      # gets deleted
+      if tempfile
+        tempfile.close!
+      end
     end
+
 
     # Ideally, we would now fsync the directory as well, but Ruby doesn't
     # have support for that, and it doesn't matter /that/ much...
@@ -472,7 +528,6 @@ module Util
     file
   end
   module_function :replace_file
-
 
   # Executes a block of code, wrapped with some special exception handling.  Causes the ruby interpreter to
   #  exit if the block throws an exception.
@@ -501,41 +556,14 @@ module Util
   module_function :exit_on_fail
 
   def deterministic_rand(seed,max)
-    if defined?(Random) == 'constant' && Random.class == Class
-      Random.new(seed).rand(max).to_s
-    else
-      srand(seed)
-      result = rand(max).to_s
-      srand()
-      result
-    end
+    deterministic_rand_int(seed, max).to_s
   end
   module_function :deterministic_rand
 
-
-  #######################################################################################################
-  # Deprecated methods relating to process execution; these have been moved to Puppet::Util::Execution
-  #######################################################################################################
-
-  def execpipe(command, failonfail = true, &block)
-    Puppet.deprecation_warning("Puppet::Util.execpipe is deprecated; please use Puppet::Util::Execution.execpipe")
-    Puppet::Util::Execution.execpipe(command, failonfail, &block)
+  def deterministic_rand_int(seed,max)
+    Random.new(seed).rand(max)
   end
-  module_function :execpipe
-
-  def execfail(command, exception)
-    Puppet.deprecation_warning("Puppet::Util.execfail is deprecated; please use Puppet::Util::Execution.execfail")
-    Puppet::Util::Execution.execfail(command, exception)
-  end
-  module_function :execfail
-
-  def execute(*args)
-    Puppet.deprecation_warning("Puppet::Util.execute is deprecated; please use Puppet::Util::Execution.execute")
-
-    Puppet::Util::Execution.execute(*args)
-  end
-  module_function :execute
-
+  module_function :deterministic_rand_int
 end
 end
 

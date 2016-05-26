@@ -1,7 +1,7 @@
 #! /usr/bin/env ruby
 require 'spec_helper'
 
-require 'win32/taskscheduler' if Puppet.features.microsoft_windows?
+require 'puppet/util/windows/taskscheduler' if Puppet.features.microsoft_windows?
 
 shared_examples_for "a trigger that handles start_date and start_time" do
   let(:trigger) do
@@ -31,11 +31,11 @@ shared_examples_for "a trigger that handles start_date and start_time" do
     it 'should be able to be specified in ISO 8601 calendar date format' do
       trigger_hash['start_date'] = '2011-12-31'
 
-      date_component.should == {
+      expect(date_component).to eq({
         'start_year'  => 2011,
         'start_month' => 12,
         'start_day'   => 31
-      }
+      })
     end
 
     it 'should fail if before 1753-01-01' do
@@ -50,21 +50,21 @@ shared_examples_for "a trigger that handles start_date and start_time" do
     it 'should succeed if on 1753-01-01' do
       trigger_hash['start_date'] = '1753-01-01'
 
-      date_component.should == {
+      expect(date_component).to eq({
         'start_year'  => 1753,
         'start_month' => 1,
         'start_day'   => 1
-      }
+      })
     end
 
     it 'should succeed if after 1753-01-01' do
       trigger_hash['start_date'] = '1753-01-02'
 
-      date_component.should == {
+      expect(date_component).to eq({
         'start_year'  => 1753,
         'start_month' => 1,
         'start_day'   => 2
-      }
+      })
     end
   end
 
@@ -83,28 +83,28 @@ shared_examples_for "a trigger that handles start_date and start_time" do
     it 'should be able to be specified as a 24-hour "hh:mm"' do
       trigger_hash['start_time'] = '17:13'
 
-      time_component.should == {
+      expect(time_component).to eq({
         'start_hour'   => 17,
         'start_minute' => 13
-      }
+      })
     end
 
     it 'should be able to be specified as a 12-hour "hh:mm am"' do
       trigger_hash['start_time'] = '3:13 am'
 
-      time_component.should == {
+      expect(time_component).to eq({
         'start_hour'   => 3,
         'start_minute' => 13
-      }
+      })
     end
 
     it 'should be able to be specified as a 12-hour "hh:mm pm"' do
       trigger_hash['start_time'] = '3:13 pm'
 
-      time_component.should == {
+      expect(time_component).to eq({
         'start_hour'   => 15,
         'start_minute' => 13
-      }
+      })
     end
   end
 end
@@ -116,7 +116,7 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
 
   describe 'when retrieving' do
     before :each do
-      @mock_task = mock
+      @mock_task = stub
       @mock_task.responds_like(Win32::TaskScheduler.new)
       described_class.any_instance.stubs(:task).returns(@mock_task)
 
@@ -142,14 +142,42 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
             'type'         => { 'days_interval' => 2 },
           })
 
-          resource.provider.trigger.should == {
-            'start_date' => '2011-9-12',
-            'start_time' => '13:20',
-            'schedule'   => 'daily',
-            'every'      => '2',
-            'enabled'    => true,
-            'index'      => 0,
-          }
+          expect(resource.provider.trigger).to eq([{
+            'start_date'       => '2011-9-12',
+            'start_time'       => '13:20',
+            'schedule'         => 'daily',
+            'every'            => '2',
+            'minutes_interval' => 0,
+            'minutes_duration' => 0,
+            'enabled'          => true,
+            'index'            => 0,
+          }])
+        end
+
+        it 'should handle a single daily with repeat trigger' do
+          @mock_task.expects(:trigger).with(0).returns({
+            'trigger_type'     => Win32::TaskScheduler::TASK_TIME_TRIGGER_DAILY,
+            'start_year'       => 2011,
+            'start_month'      => 9,
+            'start_day'        => 12,
+            'start_hour'       => 13,
+            'start_minute'     => 20,
+            'minutes_interval' => 60,
+            'minutes_duration' => 180,
+            'flags'            => 0,
+            'type'             => { 'days_interval' => 2 },
+          })
+
+          expect(resource.provider.trigger).to eq([{
+            'start_date'       => '2011-9-12',
+            'start_time'       => '13:20',
+            'schedule'         => 'daily',
+            'every'            => '2',
+            'minutes_interval' => 60,
+            'minutes_duration' => 180,
+            'enabled'          => true,
+            'index'            => 0,
+          }])
         end
 
         it 'should handle a single weekly trigger' do
@@ -171,15 +199,17 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
             }
           })
 
-          resource.provider.trigger.should == {
-            'start_date' => '2011-9-12',
-            'start_time' => '13:20',
-            'schedule'   => 'weekly',
-            'every'      => '2',
-            'on'         => ['sun', 'mon', 'wed', 'fri'],
-            'enabled'    => true,
-            'index'      => 0,
-          }
+          expect(resource.provider.trigger).to eq([{
+            'start_date'       => '2011-9-12',
+            'start_time'       => '13:20',
+            'schedule'         => 'weekly',
+            'every'            => '2',
+            'day_of_week'      => ['sun', 'mon', 'wed', 'fri'],
+            'minutes_interval' => 0,
+            'minutes_duration' => 0,
+            'enabled'          => true,
+            'index'            => 0,
+          }])
         end
 
         it 'should handle a single monthly date-based trigger' do
@@ -204,15 +234,17 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
             }
           })
 
-          resource.provider.trigger.should == {
-            'start_date' => '2011-9-12',
-            'start_time' => '13:20',
-            'schedule'   => 'monthly',
-            'months'     => [1, 2, 8, 9, 12],
-            'on'         => [1, 3, 5, 15, 'last'],
-            'enabled'    => true,
-            'index'      => 0,
-          }
+          expect(resource.provider.trigger).to eq([{
+            'start_date'       => '2011-9-12',
+            'start_time'       => '13:20',
+            'schedule'         => 'monthly',
+            'months'           => [1, 2, 8, 9, 12],
+            'on'               => [1, 3, 5, 15, 'last'],
+            'minutes_interval' => 0,
+            'minutes_duration' => 0,
+            'enabled'          => true,
+            'index'            => 0,
+          }])
         end
 
         it 'should handle a single monthly day-of-week-based trigger' do
@@ -240,16 +272,18 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
             }
           })
 
-          resource.provider.trigger.should == {
+          expect(resource.provider.trigger).to eq([{
             'start_date'       => '2011-9-12',
             'start_time'       => '13:20',
             'schedule'         => 'monthly',
             'months'           => [1, 2, 8, 9, 12],
             'which_occurrence' => 'first',
             'day_of_week'      => ['sun', 'mon', 'wed', 'fri'],
+            'minutes_interval' => 0,
+            'minutes_duration' => 0,
             'enabled'          => true,
             'index'            => 0,
-          }
+          }])
         end
 
         it 'should handle a single one-time trigger' do
@@ -263,13 +297,15 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
             'flags'        => 0,
           })
 
-          resource.provider.trigger.should == {
-            'start_date' => '2011-9-12',
-            'start_time' => '13:20',
-            'schedule'   => 'once',
-            'enabled'    => true,
-            'index'      => 0,
-          }
+          expect(resource.provider.trigger).to eq([{
+            'start_date'       => '2011-9-12',
+            'start_time'       => '13:20',
+            'schedule'         => 'once',
+            'minutes_interval' => 0,
+            'minutes_duration' => 0,
+            'enabled'          => true,
+            'index'            => 0,
+          }])
         end
       end
 
@@ -303,29 +339,102 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
           'flags'        => 0,
         })
 
-        resource.provider.trigger.should =~ [
+        expect(resource.provider.trigger).to match_array([
           {
-            'start_date' => '2011-10-13',
-            'start_time' => '14:21',
-            'schedule'   => 'once',
-            'enabled'    => true,
-            'index'      => 0,
+            'start_date'       => '2011-10-13',
+            'start_time'       => '14:21',
+            'schedule'         => 'once',
+            'minutes_interval' => 0,
+            'minutes_duration' => 0,
+            'enabled'          => true,
+            'index'            => 0,
           },
           {
-            'start_date' => '2012-11-14',
-            'start_time' => '15:22',
-            'schedule'   => 'once',
-            'enabled'    => true,
-            'index'      => 1,
+            'start_date'       => '2012-11-14',
+            'start_time'       => '15:22',
+            'schedule'         => 'once',
+            'minutes_interval' => 0,
+            'minutes_duration' => 0,
+            'enabled'          => true,
+            'index'            => 1,
           },
           {
-            'start_date' => '2013-12-15',
-            'start_time' => '16:23',
-            'schedule'   => 'once',
-            'enabled'    => true,
-            'index'      => 2,
+            'start_date'       => '2013-12-15',
+            'start_time'       => '16:23',
+            'schedule'         => 'once',
+            'minutes_interval' => 0,
+            'minutes_duration' => 0,
+            'enabled'          => true,
+            'index'            => 2,
           }
-        ]
+        ])
+      end
+
+      it 'should handle multiple triggers with repeat triggers' do
+        @mock_task.expects(:trigger_count).returns(3)
+        @mock_task.expects(:trigger).with(0).returns({
+          'trigger_type'     => Win32::TaskScheduler::TASK_TIME_TRIGGER_ONCE,
+          'start_year'       => 2011,
+          'start_month'      => 10,
+          'start_day'        => 13,
+          'start_hour'       => 14,
+          'start_minute'     => 21,
+          'minutes_interval' => 15,
+          'minutes_duration' => 60,
+          'flags'            => 0,
+        })
+        @mock_task.expects(:trigger).with(1).returns({
+          'trigger_type'     => Win32::TaskScheduler::TASK_TIME_TRIGGER_ONCE,
+          'start_year'       => 2012,
+          'start_month'      => 11,
+          'start_day'        => 14,
+          'start_hour'       => 15,
+          'start_minute'     => 22,
+          'minutes_interval' => 30,
+          'minutes_duration' => 120,
+          'flags'            => 0,
+        })
+        @mock_task.expects(:trigger).with(2).returns({
+          'trigger_type'     => Win32::TaskScheduler::TASK_TIME_TRIGGER_ONCE,
+          'start_year'       => 2013,
+          'start_month'      => 12,
+          'start_day'        => 15,
+          'start_hour'       => 16,
+          'start_minute'     => 23,
+          'minutes_interval' => 60,
+          'minutes_duration' => 240,
+          'flags'            => 0,
+        })
+
+        expect(resource.provider.trigger).to match_array([
+          {
+            'start_date'       => '2011-10-13',
+            'start_time'       => '14:21',
+            'schedule'         => 'once',
+            'minutes_interval' => 15,
+            'minutes_duration' => 60,
+            'enabled'          => true,
+            'index'            => 0,
+          },
+          {
+            'start_date'       => '2012-11-14',
+            'start_time'       => '15:22',
+            'schedule'         => 'once',
+            'minutes_interval' => 30,
+            'minutes_duration' => 120,
+            'enabled'          => true,
+            'index'            => 1,
+          },
+          {
+            'start_date'       => '2013-12-15',
+            'start_time'       => '16:23',
+            'schedule'         => 'once',
+            'minutes_interval' => 60,
+            'minutes_duration' => 240,
+            'enabled'          => true,
+            'index'            => 2,
+          }
+        ])
       end
 
       it 'should skip triggers Win32::TaskScheduler cannot handle' do
@@ -352,22 +461,26 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
           'flags'        => 0,
         })
 
-        resource.provider.trigger.should =~ [
+        expect(resource.provider.trigger).to match_array([
           {
-            'start_date' => '2011-10-13',
-            'start_time' => '14:21',
-            'schedule'   => 'once',
-            'enabled'    => true,
-            'index'      => 0,
+            'start_date'       => '2011-10-13',
+            'start_time'       => '14:21',
+            'schedule'         => 'once',
+            'minutes_interval' => 0,
+            'minutes_duration' => 0,
+            'enabled'          => true,
+            'index'            => 0,
           },
           {
-            'start_date' => '2013-12-15',
-            'start_time' => '16:23',
-            'schedule'   => 'once',
-            'enabled'    => true,
-            'index'      => 2,
+            'start_date'       => '2013-12-15',
+            'start_time'       => '16:23',
+            'schedule'         => 'once',
+            'minutes_interval' => 0,
+            'minutes_duration' => 0,
+            'enabled'          => true,
+            'index'            => 2,
           }
-        ]
+        ])
       end
 
       it 'should skip trigger types Puppet does not handle' do
@@ -394,60 +507,64 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
           'flags'        => 0,
         })
 
-        resource.provider.trigger.should =~ [
+        expect(resource.provider.trigger).to match_array([
           {
-            'start_date' => '2011-10-13',
-            'start_time' => '14:21',
-            'schedule'   => 'once',
-            'enabled'    => true,
-            'index'      => 0,
+            'start_date'       => '2011-10-13',
+            'start_time'       => '14:21',
+            'schedule'         => 'once',
+            'minutes_interval' => 0,
+            'minutes_duration' => 0,
+            'enabled'          => true,
+            'index'            => 0,
           },
           {
-            'start_date' => '2013-12-15',
-            'start_time' => '16:23',
-            'schedule'   => 'once',
-            'enabled'    => true,
-            'index'      => 2,
+            'start_date'       => '2013-12-15',
+            'start_time'       => '16:23',
+            'schedule'         => 'once',
+            'minutes_interval' => 0,
+            'minutes_duration' => 0,
+            'enabled'          => true,
+            'index'            => 2,
           }
-        ]
+        ])
       end
     end
 
     it 'should get the working directory from the working_directory on the task' do
       @mock_task.expects(:working_directory).returns('C:\Windows\System32')
 
-      resource.provider.working_dir.should == 'C:\Windows\System32'
+      expect(resource.provider.working_dir).to eq('C:\Windows\System32')
     end
 
     it 'should get the command from the application_name on the task' do
       @mock_task.expects(:application_name).returns('C:\Windows\System32\notepad.exe')
 
-      resource.provider.command.should == 'C:\Windows\System32\notepad.exe'
+      expect(resource.provider.command).to eq('C:\Windows\System32\notepad.exe')
     end
 
     it 'should get the command arguments from the parameters on the task' do
       @mock_task.expects(:parameters).returns('these are my arguments')
 
-      resource.provider.arguments.should == 'these are my arguments'
+      expect(resource.provider.arguments).to eq('these are my arguments')
     end
 
     it 'should get the user from the account_information on the task' do
       @mock_task.expects(:account_information).returns('this is my user')
 
-      resource.provider.user.should == 'this is my user'
+      expect(resource.provider.user).to eq('this is my user')
     end
 
     describe 'whether the task is enabled' do
       it 'should report tasks with the disabled bit set as disabled' do
         @mock_task.stubs(:flags).returns(Win32::TaskScheduler::DISABLED)
 
-        resource.provider.enabled.should == :false
+        expect(resource.provider.enabled).to eq(:false)
       end
 
       it 'should report tasks without the disabled bit set as enabled' do
         @mock_task.stubs(:flags).returns(~Win32::TaskScheduler::DISABLED)
 
-        resource.provider.enabled.should == :true
+        expect(resource.provider.enabled).to eq(:true)
       end
 
       it 'should not consider triggers for determining if the task is enabled' do
@@ -463,14 +580,14 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
           'flags'        => Win32::TaskScheduler::TASK_TRIGGER_FLAG_DISABLED,
         })
 
-        resource.provider.enabled.should == :true
+        expect(resource.provider.enabled).to eq(:true)
       end
     end
   end
 
   describe '#exists?' do
     before :each do
-      @mock_task = mock
+      @mock_task = stub
       @mock_task.responds_like(Win32::TaskScheduler.new)
       described_class.any_instance.stubs(:task).returns(@mock_task)
 
@@ -481,14 +598,24 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
     it "should delegate to Win32::TaskScheduler using the resource's name" do
       @mock_task.expects(:exists?).with('Test Task').returns(true)
 
-      resource.provider.exists?.should == true
+      expect(resource.provider.exists?).to eq(true)
+    end
+
+    it "uses SystemRoot in the path of Task folder" do
+      Win32::TaskScheduler.unstub(:new)
+      exists_test_task = Win32::TaskScheduler.new
+      Dir.stubs(:foreach).with('D:/WinNT/Tasks').returns([])
+
+      Puppet::Util.withenv('SystemRoot' => 'D:/WinNT') do
+        exists_test_task.exists?('Test Task')
+      end
     end
   end
 
   describe '#clear_task' do
     before :each do
-      @mock_task     = mock
-      @new_mock_task = mock
+      @mock_task     = stub
+      @new_mock_task = stub
       @mock_task.responds_like(Win32::TaskScheduler.new)
       @new_mock_task.responds_like(Win32::TaskScheduler.new)
       Win32::TaskScheduler.stubs(:new).returns(@mock_task, @new_mock_task)
@@ -498,12 +625,12 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
     let(:resource) { Puppet::Type.type(:scheduled_task).new(:name => 'Test Task', :command => 'C:\Windows\System32\notepad.exe') }
 
     it 'should clear the cached task object' do
-      resource.provider.task.should == @mock_task
-      resource.provider.task.should == @mock_task
+      expect(resource.provider.task).to eq(@mock_task)
+      expect(resource.provider.task).to eq(@mock_task)
 
       resource.provider.clear_task
 
-      resource.provider.task.should == @new_mock_task
+      expect(resource.provider.task).to eq(@new_mock_task)
     end
 
     it 'should clear the cached list of triggers for the task' do
@@ -529,25 +656,29 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
       })
 
       mock_task_trigger = {
-        'start_date' => '2011-10-13',
-        'start_time' => '14:21',
-        'schedule'   => 'once',
-        'enabled'    => true,
-        'index'      => 0,
+        'start_date'       => '2011-10-13',
+        'start_time'       => '14:21',
+        'schedule'         => 'once',
+        'minutes_interval' => 0,
+        'minutes_duration' => 0,
+        'enabled'          => true,
+        'index'            => 0,
       }
 
-      resource.provider.trigger.should == mock_task_trigger
-      resource.provider.trigger.should == mock_task_trigger
+      expect(resource.provider.trigger).to eq([mock_task_trigger])
+      expect(resource.provider.trigger).to eq([mock_task_trigger])
 
       resource.provider.clear_task
 
-      resource.provider.trigger.should == {
-        'start_date' => '2012-11-14',
-        'start_time' => '15:22',
-        'schedule'   => 'once',
-        'enabled'    => true,
-        'index'      => 0,
-      }
+      expect(resource.provider.trigger).to eq([{
+        'start_date'       => '2012-11-14',
+        'start_time'       => '15:22',
+        'schedule'         => 'once',
+        'minutes_interval' => 0,
+        'minutes_duration' => 0,
+        'enabled'          => true,
+        'index'            => 0,
+      }])
     end
   end
 
@@ -569,29 +700,29 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
     let(:resource) { described_class.new(:name => 'foobar', :command => 'C:\Windows\System32\notepad.exe') }
 
     it 'should consider the user as in sync if the name matches' do
-      Puppet::Util::Windows::Security.expects(:name_to_sid).with('joe').twice.returns('SID A')
+      Puppet::Util::Windows::SID.expects(:name_to_sid).with('joe').twice.returns('SID A')
 
-      resource.should be_user_insync('joe', ['joe'])
+      expect(resource).to be_user_insync('joe', ['joe'])
     end
 
     it 'should consider the user as in sync if the current user is fully qualified' do
-      Puppet::Util::Windows::Security.expects(:name_to_sid).with('joe').returns('SID A')
-      Puppet::Util::Windows::Security.expects(:name_to_sid).with('MACHINE\joe').returns('SID A')
+      Puppet::Util::Windows::SID.expects(:name_to_sid).with('joe').returns('SID A')
+      Puppet::Util::Windows::SID.expects(:name_to_sid).with('MACHINE\joe').returns('SID A')
 
-      resource.should be_user_insync('MACHINE\joe', ['joe'])
+      expect(resource).to be_user_insync('MACHINE\joe', ['joe'])
     end
 
     it 'should consider a current user of the empty string to be the same as the system user' do
-      Puppet::Util::Windows::Security.expects(:name_to_sid).with('system').twice.returns('SYSTEM SID')
+      Puppet::Util::Windows::SID.expects(:name_to_sid).with('system').twice.returns('SYSTEM SID')
 
-      resource.should be_user_insync('', ['system'])
+      expect(resource).to be_user_insync('', ['system'])
     end
 
     it 'should consider different users as being different' do
-      Puppet::Util::Windows::Security.expects(:name_to_sid).with('joe').returns('SID A')
-      Puppet::Util::Windows::Security.expects(:name_to_sid).with('bob').returns('SID B')
+      Puppet::Util::Windows::SID.expects(:name_to_sid).with('joe').returns('SID A')
+      Puppet::Util::Windows::SID.expects(:name_to_sid).with('bob').returns('SID B')
 
-      resource.should_not be_user_insync('joe', ['bob'])
+      expect(resource).not_to be_user_insync('joe', ['bob'])
     end
   end
 
@@ -605,7 +736,7 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
       ]
       desired = {'start_date' => '2011-09-12', 'start_time' => '15:15', 'schedule' => 'once'}
 
-      resource.should_not be_trigger_insync(current, desired)
+      expect(resource).not_to be_trigger_insync(current, desired)
     end
 
     it 'should not consider any extra desired triggers as in sync' do
@@ -615,7 +746,7 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
         {'start_date' => '2012-10-13', 'start_time' => '16:16', 'schedule' => 'once'}
       ]
 
-      resource.should_not be_trigger_insync(current, desired)
+      expect(resource).not_to be_trigger_insync(current, desired)
     end
 
     it 'should consider triggers to be in sync if the sets of current and desired triggers are equal' do
@@ -628,25 +759,58 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
         {'start_date' => '2012-10-13', 'start_time' => '16:16', 'schedule' => 'once'}
       ]
 
-      resource.should be_trigger_insync(current, desired)
+      expect(resource).to be_trigger_insync(current, desired)
     end
   end
 
   describe '#triggers_same?' do
     let(:provider) { described_class.new(:name => 'foobar', :command => 'C:\Windows\System32\notepad.exe') }
 
+    it "should not mutate triggers" do
+      current = {'schedule' => 'daily', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'every' => 3}
+      current.freeze
+
+      desired = {'schedule' => 'daily', 'start_date' => '2011-09-12', 'start_time' => '15:30'}
+      desired.freeze
+
+      expect(provider).to be_triggers_same(current, desired)
+    end
+
+    it "ignores 'index' in current trigger" do
+      current = {'index' => 0, 'schedule' => 'daily', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'every' => 3}
+      desired = {'schedule' => 'daily', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'every' => 3}
+
+      expect(provider).to be_triggers_same(current, desired)
+    end
+
+    it "ignores 'enabled' in current triggger" do
+      current = {'enabled' => true, 'schedule' => 'daily', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'every' => 3}
+      desired = {'schedule' => 'daily', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'every' => 3}
+
+      expect(provider).to be_triggers_same(current, desired)
+    end
+
     it "should not consider a disabled 'current' trigger to be the same" do
       current = {'schedule' => 'once', 'enabled' => false}
       desired = {'schedule' => 'once'}
 
-      provider.should_not be_triggers_same(current, desired)
+      expect(provider).not_to be_triggers_same(current, desired)
     end
 
     it 'should not consider triggers with different schedules to be the same' do
       current = {'schedule' => 'once'}
       desired = {'schedule' => 'weekly'}
 
-      provider.should_not be_triggers_same(current, desired)
+      expect(provider).not_to be_triggers_same(current, desired)
+    end
+
+    describe 'start_date' do
+      it "considers triggers to be equal when start_date is not specified in the 'desired' trigger" do
+        current = {'schedule' => 'daily', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'every' => 3}
+        desired = {'schedule' => 'daily', 'start_time' => '15:30', 'every' => 3}
+
+        expect(provider).to be_triggers_same(current, desired)
+      end
     end
 
     describe 'comparing daily triggers' do
@@ -654,48 +818,48 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
         current = {'schedule' => 'daily', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'every' => 3}
         desired = {'schedule' => 'daily', 'start_date' => '2011-09-12', 'start_time' => '15:30'}
 
-        provider.should be_triggers_same(current, desired)
+        expect(provider).to be_triggers_same(current, desired)
       end
 
       it "should consider different 'start_dates' as different triggers" do
         current = {'schedule' => 'daily', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'every' => 3}
         desired = {'schedule' => 'daily', 'start_date' => '2012-09-12', 'start_time' => '15:30', 'every' => 3}
 
-        provider.should_not be_triggers_same(current, desired)
+        expect(provider).not_to be_triggers_same(current, desired)
       end
 
       it "should consider different 'start_times' as different triggers" do
         current = {'schedule' => 'daily', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'every' => 3}
         desired = {'schedule' => 'daily', 'start_date' => '2011-09-12', 'start_time' => '15:31', 'every' => 3}
 
-        provider.should_not be_triggers_same(current, desired)
+        expect(provider).not_to be_triggers_same(current, desired)
       end
 
       it 'should not consider differences in date formatting to be different triggers' do
         current = {'schedule' => 'weekly', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'every' => 3}
         desired = {'schedule' => 'weekly', 'start_date' => '2011-9-12',  'start_time' => '15:30', 'every' => 3}
 
-        provider.should be_triggers_same(current, desired)
+        expect(provider).to be_triggers_same(current, desired)
       end
 
       it 'should not consider differences in time formatting to be different triggers' do
         current = {'schedule' => 'weekly', 'start_date' => '2011-09-12', 'start_time' => '5:30',  'every' => 3}
         desired = {'schedule' => 'weekly', 'start_date' => '2011-09-12', 'start_time' => '05:30', 'every' => 3}
 
-        provider.should be_triggers_same(current, desired)
+        expect(provider).to be_triggers_same(current, desired)
       end
 
       it "should consider different 'every' as different triggers" do
         current = {'schedule' => 'daily', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'every' => 3}
         desired = {'schedule' => 'daily', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'every' => 1}
 
-        provider.should_not be_triggers_same(current, desired)
+        expect(provider).not_to be_triggers_same(current, desired)
       end
 
       it 'should consider triggers that are the same as being the same' do
         trigger = {'schedule' => 'weekly', 'start_date' => '2011-09-12', 'start_time' => '01:30', 'every' => 1}
 
-        provider.should be_triggers_same(trigger, trigger)
+        expect(provider).to be_triggers_same(trigger, trigger)
       end
     end
 
@@ -704,34 +868,34 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
         current = {'schedule' => 'daily', 'start_date' => '2011-09-12', 'start_time' => '15:30'}
         desired = {'schedule' => 'daily', 'start_date' => '2012-09-12', 'start_time' => '15:30'}
 
-        provider.should_not be_triggers_same(current, desired)
+        expect(provider).not_to be_triggers_same(current, desired)
       end
 
       it "should consider different 'start_times' as different triggers" do
         current = {'schedule' => 'daily', 'start_date' => '2011-09-12', 'start_time' => '15:30'}
         desired = {'schedule' => 'daily', 'start_date' => '2011-09-12', 'start_time' => '15:31'}
 
-        provider.should_not be_triggers_same(current, desired)
+        expect(provider).not_to be_triggers_same(current, desired)
       end
 
       it 'should not consider differences in date formatting to be different triggers' do
         current = {'schedule' => 'weekly', 'start_date' => '2011-09-12', 'start_time' => '15:30'}
         desired = {'schedule' => 'weekly', 'start_date' => '2011-9-12',  'start_time' => '15:30'}
 
-        provider.should be_triggers_same(current, desired)
+        expect(provider).to be_triggers_same(current, desired)
       end
 
       it 'should not consider differences in time formatting to be different triggers' do
         current = {'schedule' => 'weekly', 'start_date' => '2011-09-12', 'start_time' => '1:30'}
         desired = {'schedule' => 'weekly', 'start_date' => '2011-09-12', 'start_time' => '01:30'}
 
-        provider.should be_triggers_same(current, desired)
+        expect(provider).to be_triggers_same(current, desired)
       end
 
       it 'should consider triggers that are the same as being the same' do
         trigger = {'schedule' => 'weekly', 'start_date' => '2011-09-12', 'start_time' => '01:30'}
 
-        provider.should be_triggers_same(trigger, trigger)
+        expect(provider).to be_triggers_same(trigger, trigger)
       end
     end
 
@@ -740,55 +904,55 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
         current = {'schedule' => 'monthly', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'months' => [3], 'on' => [1,'last']}
         desired = {'schedule' => 'monthly', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'on' => [1, 'last']}
 
-        provider.should be_triggers_same(current, desired)
+        expect(provider).to be_triggers_same(current, desired)
       end
 
       it "should consider different 'start_dates' as different triggers" do
         current = {'schedule' => 'monthly', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'months' => [1, 2], 'on' => [1, 3, 5, 7]}
         desired = {'schedule' => 'monthly', 'start_date' => '2011-10-12', 'start_time' => '15:30', 'months' => [1, 2], 'on' => [1, 3, 5, 7]}
 
-        provider.should_not be_triggers_same(current, desired)
+        expect(provider).not_to be_triggers_same(current, desired)
       end
 
       it "should consider different 'start_times' as different triggers" do
         current = {'schedule' => 'monthly', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'months' => [1, 2], 'on' => [1, 3, 5, 7]}
         desired = {'schedule' => 'monthly', 'start_date' => '2011-09-12', 'start_time' => '22:30', 'months' => [1, 2], 'on' => [1, 3, 5, 7]}
 
-        provider.should_not be_triggers_same(current, desired)
+        expect(provider).not_to be_triggers_same(current, desired)
       end
 
       it 'should not consider differences in date formatting to be different triggers' do
         current = {'schedule' => 'monthly', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'months' => [1, 2], 'on' => [1, 3, 5, 7]}
         desired = {'schedule' => 'monthly', 'start_date' => '2011-9-12',  'start_time' => '15:30', 'months' => [1, 2], 'on' => [1, 3, 5, 7]}
 
-        provider.should be_triggers_same(current, desired)
+        expect(provider).to be_triggers_same(current, desired)
       end
 
       it 'should not consider differences in time formatting to be different triggers' do
         current = {'schedule' => 'monthly', 'start_date' => '2011-09-12', 'start_time' => '5:30',  'months' => [1, 2], 'on' => [1, 3, 5, 7]}
         desired = {'schedule' => 'monthly', 'start_date' => '2011-09-12', 'start_time' => '05:30', 'months' => [1, 2], 'on' => [1, 3, 5, 7]}
 
-        provider.should be_triggers_same(current, desired)
+        expect(provider).to be_triggers_same(current, desired)
       end
 
       it "should consider different 'months' as different triggers" do
         current = {'schedule' => 'monthly', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'months' => [1, 2], 'on' => [1, 3, 5, 7]}
         desired = {'schedule' => 'monthly', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'months' => [1],    'on' => [1, 3, 5, 7]}
 
-        provider.should_not be_triggers_same(current, desired)
+        expect(provider).not_to be_triggers_same(current, desired)
       end
 
       it "should consider different 'on' as different triggers" do
         current = {'schedule' => 'monthly', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'months' => [1, 2], 'on' => [1, 3, 5, 7]}
         desired = {'schedule' => 'monthly', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'months' => [1, 2], 'on' => [1, 5, 7]}
 
-        provider.should_not be_triggers_same(current, desired)
+        expect(provider).not_to be_triggers_same(current, desired)
       end
 
       it 'should consider triggers that are the same as being the same' do
         trigger = {'schedule' => 'monthly', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'months' => [1, 2], 'on' => [1, 3, 5, 7]}
 
-        provider.should be_triggers_same(trigger, trigger)
+        expect(provider).to be_triggers_same(trigger, trigger)
       end
     end
 
@@ -810,7 +974,7 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
           'day_of_week'      => ['mon', 'tues', 'sat']
         }
 
-        provider.should be_triggers_same(current, desired)
+        expect(provider).to be_triggers_same(current, desired)
       end
 
       it "should consider different 'start_dates' as different triggers" do
@@ -831,7 +995,7 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
           'day_of_week'      => ['mon', 'tues', 'sat']
         }
 
-        provider.should_not be_triggers_same(current, desired)
+        expect(provider).not_to be_triggers_same(current, desired)
       end
 
       it "should consider different 'start_times' as different triggers" do
@@ -852,7 +1016,7 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
           'day_of_week'      => ['mon', 'tues', 'sat']
         }
 
-        provider.should_not be_triggers_same(current, desired)
+        expect(provider).not_to be_triggers_same(current, desired)
       end
 
       it "should consider different 'months' as different triggers" do
@@ -873,7 +1037,7 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
           'day_of_week'      => ['mon', 'tues', 'sat']
         }
 
-        provider.should_not be_triggers_same(current, desired)
+        expect(provider).not_to be_triggers_same(current, desired)
       end
 
       it "should consider different 'which_occurrence' as different triggers" do
@@ -894,7 +1058,7 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
           'day_of_week'      => ['mon', 'tues', 'sat']
         }
 
-        provider.should_not be_triggers_same(current, desired)
+        expect(provider).not_to be_triggers_same(current, desired)
       end
 
       it "should consider different 'day_of_week' as different triggers" do
@@ -915,7 +1079,7 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
           'day_of_week'      => ['fri']
         }
 
-        provider.should_not be_triggers_same(current, desired)
+        expect(provider).not_to be_triggers_same(current, desired)
       end
 
       it 'should consider triggers that are the same as being the same' do
@@ -928,7 +1092,7 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
           'day_of_week'      => ['mon', 'tues', 'sat']
         }
 
-        provider.should be_triggers_same(trigger, trigger)
+        expect(provider).to be_triggers_same(trigger, trigger)
       end
     end
 
@@ -937,68 +1101,68 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
         current = {'schedule' => 'weekly', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'every' => 3, 'day_of_week' => ['mon', 'wed', 'fri']}
         desired = {'schedule' => 'weekly', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'every' => 3}
 
-        provider.should be_triggers_same(current, desired)
+        expect(provider).to be_triggers_same(current, desired)
       end
 
       it "should consider different 'start_dates' as different triggers" do
         current = {'schedule' => 'weekly', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'every' => 3, 'day_of_week' => ['mon', 'wed', 'fri']}
         desired = {'schedule' => 'weekly', 'start_date' => '2011-10-12', 'start_time' => '15:30', 'every' => 3, 'day_of_week' => ['mon', 'wed', 'fri']}
 
-        provider.should_not be_triggers_same(current, desired)
+        expect(provider).not_to be_triggers_same(current, desired)
       end
 
       it "should consider different 'start_times' as different triggers" do
         current = {'schedule' => 'weekly', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'every' => 3, 'day_of_week' => ['mon', 'wed', 'fri']}
         desired = {'schedule' => 'weekly', 'start_date' => '2011-09-12', 'start_time' => '22:30', 'every' => 3, 'day_of_week' => ['mon', 'wed', 'fri']}
 
-        provider.should_not be_triggers_same(current, desired)
+        expect(provider).not_to be_triggers_same(current, desired)
       end
 
       it 'should not consider differences in date formatting to be different triggers' do
         current = {'schedule' => 'weekly', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'every' => 3, 'day_of_week' => ['mon', 'wed', 'fri']}
         desired = {'schedule' => 'weekly', 'start_date' => '2011-9-12',  'start_time' => '15:30', 'every' => 3, 'day_of_week' => ['mon', 'wed', 'fri']}
 
-        provider.should be_triggers_same(current, desired)
+        expect(provider).to be_triggers_same(current, desired)
       end
 
       it 'should not consider differences in time formatting to be different triggers' do
         current = {'schedule' => 'weekly', 'start_date' => '2011-09-12', 'start_time' => '1:30',  'every' => 3, 'day_of_week' => ['mon', 'wed', 'fri']}
         desired = {'schedule' => 'weekly', 'start_date' => '2011-09-12', 'start_time' => '01:30', 'every' => 3, 'day_of_week' => ['mon', 'wed', 'fri']}
 
-        provider.should be_triggers_same(current, desired)
+        expect(provider).to be_triggers_same(current, desired)
       end
 
       it "should consider different 'every' as different triggers" do
         current = {'schedule' => 'weekly', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'every' => 1, 'day_of_week' => ['mon', 'wed', 'fri']}
         desired = {'schedule' => 'weekly', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'every' => 3, 'day_of_week' => ['mon', 'wed', 'fri']}
 
-        provider.should_not be_triggers_same(current, desired)
+        expect(provider).not_to be_triggers_same(current, desired)
       end
 
       it "should consider different 'day_of_week' as different triggers" do
         current = {'schedule' => 'weekly', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'every' => 3, 'day_of_week' => ['mon', 'wed', 'fri']}
         desired = {'schedule' => 'weekly', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'every' => 3, 'day_of_week' => ['fri']}
 
-        provider.should_not be_triggers_same(current, desired)
+        expect(provider).not_to be_triggers_same(current, desired)
       end
 
       it 'should consider triggers that are the same as being the same' do
         trigger = {'schedule' => 'weekly', 'start_date' => '2011-09-12', 'start_time' => '15:30', 'every' => 3, 'day_of_week' => ['mon', 'wed', 'fri']}
 
-        provider.should be_triggers_same(trigger, trigger)
+        expect(provider).to be_triggers_same(trigger, trigger)
       end
     end
   end
 
   describe '#normalized_date' do
     it 'should format the date without leading zeros' do
-      described_class.normalized_date('2011-01-01').should == '2011-1-1'
+      expect(described_class.normalized_date('2011-01-01')).to eq('2011-1-1')
     end
   end
 
   describe '#normalized_time' do
     it 'should format the time as {24h}:{minutes}' do
-      described_class.normalized_time('8:37 PM').should == '20:37'
+      expect(described_class.normalized_time('8:37 PM')).to eq('20:37')
     end
   end
 
@@ -1012,17 +1176,138 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
     let(:provider) { described_class.new(:name => 'Test Task', :command => 'C:\Windows\System32\notepad.exe') }
     let(:trigger)  { provider.translate_hash_to_trigger(@puppet_trigger) }
 
+    context "working with repeat every x triggers" do
+      before :each do
+        @puppet_trigger['schedule'] = 'once'
+      end
+
+      it 'should succeed if minutes_interval is equal to 0' do
+        @puppet_trigger['minutes_interval'] = '0'
+
+        expect(trigger['minutes_interval']).to eq(0)
+      end
+
+      it 'should default minutes_duration to a full day when minutes_interval is greater than 0 without setting minutes_duration' do
+        @puppet_trigger['minutes_interval'] = '1'
+
+        expect(trigger['minutes_duration']).to eq(1440)
+      end
+
+      it 'should succeed if minutes_interval is greater than 0 and minutes_duration is also set' do
+        @puppet_trigger['minutes_interval'] = '1'
+        @puppet_trigger['minutes_duration'] = '2'
+
+        expect(trigger['minutes_interval']).to eq(1)
+      end
+
+      it 'should fail if minutes_interval is less than 0' do
+        @puppet_trigger['minutes_interval'] = '-1'
+
+        expect { trigger }.to raise_error(
+          Puppet::Error,
+          'minutes_interval must be an integer greater or equal to 0'
+        )
+      end
+
+      it 'should fail if minutes_interval is not an integer' do
+        @puppet_trigger['minutes_interval'] = 'abc'
+        expect { trigger }.to raise_error(ArgumentError)
+      end
+
+      it 'should succeed if minutes_duration is equal to 0' do
+        @puppet_trigger['minutes_duration'] = '0'
+        expect(trigger['minutes_duration']).to eq(0)
+      end
+
+      it 'should succeed if minutes_duration is greater than 0' do
+        @puppet_trigger['minutes_duration'] = '1'
+        expect(trigger['minutes_duration']).to eq(1)
+      end
+
+      it 'should fail if minutes_duration is less than 0' do
+        @puppet_trigger['minutes_duration'] = '-1'
+
+        expect { trigger }.to raise_error(
+          Puppet::Error,
+          'minutes_duration must be an integer greater than minutes_interval and equal to or greater than 0'
+        )
+      end
+
+      it 'should fail if minutes_duration is not an integer' do
+        @puppet_trigger['minutes_duration'] = 'abc'
+        expect { trigger }.to raise_error(ArgumentError)
+      end
+
+      it 'should succeed if minutes_duration is equal to a full day' do
+        @puppet_trigger['minutes_duration'] = '1440'
+        expect(trigger['minutes_duration']).to eq(1440)
+      end
+
+      it 'should succeed if minutes_duration is equal to three days' do
+        @puppet_trigger['minutes_duration'] = '4320'
+        expect(trigger['minutes_duration']).to eq(4320)
+      end
+
+      it 'should succeed if minutes_duration is greater than minutes_duration' do
+        @puppet_trigger['minutes_interval'] = '10'
+        @puppet_trigger['minutes_duration'] = '11'
+
+        expect(trigger['minutes_interval']).to eq(10)
+        expect(trigger['minutes_duration']).to eq(11)
+      end
+
+      it 'should fail if minutes_duration is equal to minutes_interval' do
+        # On Windows 2003, the duration must be greater than the interval
+        # on other platforms the values can be equal.
+        @puppet_trigger['minutes_interval'] = '10'
+        @puppet_trigger['minutes_duration'] = '10'
+
+        expect { trigger }.to raise_error(
+          Puppet::Error,
+          'minutes_duration must be an integer greater than minutes_interval and equal to or greater than 0'
+        )
+      end
+
+      it 'should succeed if minutes_duration and minutes_interval are both set to 0' do
+        @puppet_trigger['minutes_interval'] = '0'
+        @puppet_trigger['minutes_duration'] = '0'
+
+        expect(trigger['minutes_interval']).to eq(0)
+        expect(trigger['minutes_duration']).to eq(0)
+      end
+
+      it 'should fail if minutes_duration is less than minutes_interval' do
+        @puppet_trigger['minutes_interval'] = '10'
+        @puppet_trigger['minutes_duration'] = '9'
+
+        expect { trigger }.to raise_error(
+          Puppet::Error,
+          'minutes_duration must be an integer greater than minutes_interval and equal to or greater than 0'
+        )
+      end
+
+      it 'should fail if minutes_duration is less than minutes_interval and set to 0' do
+        @puppet_trigger['minutes_interval'] = '10'
+        @puppet_trigger['minutes_duration'] = '0'
+
+        expect { trigger }.to raise_error(
+          Puppet::Error,
+          'minutes_interval cannot be set without minutes_duration also being set to a number greater than 0'
+        )
+      end
+    end
+
     describe 'when given a one-time trigger' do
       before :each do
         @puppet_trigger['schedule'] = 'once'
       end
 
       it 'should set the trigger_type to Win32::TaskScheduler::ONCE' do
-        trigger['trigger_type'].should == Win32::TaskScheduler::ONCE
+        expect(trigger['trigger_type']).to eq(Win32::TaskScheduler::ONCE)
       end
 
       it 'should not set a type' do
-        trigger.should_not be_has_key('type')
+        expect(trigger).not_to be_has_key('type')
       end
 
       it "should require 'start_date'" do
@@ -1054,22 +1339,22 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
       end
 
       it "should default 'every' to 1" do
-        trigger['type']['days_interval'].should == 1
+        expect(trigger['type']['days_interval']).to eq(1)
       end
 
       it "should use the specified value for 'every'" do
         @puppet_trigger['every'] = 5
 
-        trigger['type']['days_interval'].should == 5
+        expect(trigger['type']['days_interval']).to eq(5)
       end
 
       it "should default 'start_date' to 'today'" do
         @puppet_trigger.delete('start_date')
         today = Time.now
 
-        trigger['start_year'].should == today.year
-        trigger['start_month'].should == today.month
-        trigger['start_day'].should == today.day
+        expect(trigger['start_year']).to eq(today.year)
+        expect(trigger['start_month']).to eq(today.month)
+        expect(trigger['start_day']).to eq(today.day)
       end
 
       it_behaves_like "a trigger that handles start_date and start_time" do
@@ -1083,40 +1368,40 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
       end
 
       it "should default 'every' to 1" do
-        trigger['type']['weeks_interval'].should == 1
+        expect(trigger['type']['weeks_interval']).to eq(1)
       end
 
       it "should use the specified value for 'every'" do
         @puppet_trigger['every'] = 4
 
-        trigger['type']['weeks_interval'].should == 4
+        expect(trigger['type']['weeks_interval']).to eq(4)
       end
 
       it "should default 'day_of_week' to be every day of the week" do
-        trigger['type']['days_of_week'].should == Win32::TaskScheduler::MONDAY    |
+        expect(trigger['type']['days_of_week']).to eq(Win32::TaskScheduler::MONDAY    |
                                                   Win32::TaskScheduler::TUESDAY   |
                                                   Win32::TaskScheduler::WEDNESDAY |
                                                   Win32::TaskScheduler::THURSDAY  |
                                                   Win32::TaskScheduler::FRIDAY    |
                                                   Win32::TaskScheduler::SATURDAY  |
-                                                  Win32::TaskScheduler::SUNDAY
+                                                  Win32::TaskScheduler::SUNDAY)
       end
 
       it "should use the specified value for 'day_of_week'" do
         @puppet_trigger['day_of_week'] = ['mon', 'wed', 'fri']
 
-        trigger['type']['days_of_week'].should == Win32::TaskScheduler::MONDAY    |
+        expect(trigger['type']['days_of_week']).to eq(Win32::TaskScheduler::MONDAY    |
                                                   Win32::TaskScheduler::WEDNESDAY |
-                                                  Win32::TaskScheduler::FRIDAY
+                                                  Win32::TaskScheduler::FRIDAY)
       end
 
       it "should default 'start_date' to 'today'" do
         @puppet_trigger.delete('start_date')
         today = Time.now
 
-        trigger['start_year'].should == today.year
-        trigger['start_month'].should == today.month
-        trigger['start_day'].should == today.day
+        expect(trigger['start_year']).to eq(today.year)
+        expect(trigger['start_month']).to eq(today.month)
+        expect(trigger['start_day']).to eq(today.day)
       end
 
       it_behaves_like "a trigger that handles start_date and start_time" do
@@ -1126,7 +1411,7 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
 
     shared_examples_for 'a monthly schedule' do
       it "should default 'months' to be every month" do
-        trigger['type']['months'].should == Win32::TaskScheduler::JANUARY   |
+        expect(trigger['type']['months']).to eq(Win32::TaskScheduler::JANUARY   |
                                             Win32::TaskScheduler::FEBRUARY  |
                                             Win32::TaskScheduler::MARCH     |
                                             Win32::TaskScheduler::APRIL     |
@@ -1137,14 +1422,14 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
                                             Win32::TaskScheduler::SEPTEMBER |
                                             Win32::TaskScheduler::OCTOBER   |
                                             Win32::TaskScheduler::NOVEMBER  |
-                                            Win32::TaskScheduler::DECEMBER
+                                            Win32::TaskScheduler::DECEMBER)
       end
 
       it "should use the specified value for 'months'" do
         @puppet_trigger['months'] = [2, 8]
 
-        trigger['type']['months'].should == Win32::TaskScheduler::FEBRUARY  |
-                                            Win32::TaskScheduler::AUGUST
+        expect(trigger['type']['months']).to eq(Win32::TaskScheduler::FEBRUARY  |
+                                            Win32::TaskScheduler::AUGUST)
       end
     end
 
@@ -1187,9 +1472,9 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
         @puppet_trigger.delete('start_date')
         today = Time.now
 
-        trigger['start_year'].should == today.year
-        trigger['start_month'].should == today.month
-        trigger['start_day'].should == today.day
+        expect(trigger['start_year']).to eq(today.year)
+        expect(trigger['start_month']).to eq(today.month)
+        expect(trigger['start_day']).to eq(today.day)
       end
 
       it_behaves_like "a trigger that handles start_date and start_time" do
@@ -1237,9 +1522,9 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
         @puppet_trigger.delete('start_date')
         today = Time.now
 
-        trigger['start_year'].should == today.year
-        trigger['start_month'].should == today.month
-        trigger['start_day'].should == today.day
+        expect(trigger['start_year']).to eq(today.year)
+        expect(trigger['start_month']).to eq(today.month)
+        expect(trigger['start_day']).to eq(today.day)
       end
 
       it_behaves_like "a trigger that handles start_date and start_time" do
@@ -1257,7 +1542,7 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
         {'schedule' => 'weekly', 'start_date' => '2011-09-13', 'start_time' => '13:50', 'day_of_week' => 'mon'}
       ]
 
-      provider.validate_trigger(triggers_to_validate).should == true
+      expect(provider.validate_trigger(triggers_to_validate)).to eq(true)
     end
 
     it 'should use the exception from translate_hash_to_trigger when it fails' do
@@ -1283,7 +1568,7 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
     end
 
     before :each do
-      @mock_task = mock
+      @mock_task = stub
       @mock_task.responds_like(Win32::TaskScheduler.new)
       @mock_task.stubs(:exists?).returns(true)
       @mock_task.stubs(:activate)
@@ -1350,7 +1635,7 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
     end
 
     before :each do
-        @mock_task = mock
+        @mock_task = stub
         @mock_task.responds_like(Win32::TaskScheduler.new)
         @mock_task.stubs(:exists?).returns(true)
         @mock_task.stubs(:activate)
@@ -1407,7 +1692,7 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
       end
 
       before :each do
-        @mock_task = mock
+        @mock_task = stub
         @mock_task.responds_like(Win32::TaskScheduler.new)
         @mock_task.stubs(:exists?).returns(true)
         @mock_task.stubs(:activate)
@@ -1461,7 +1746,7 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
 
     describe '#user=', :if => Puppet.features.microsoft_windows? do
       before :each do
-        @mock_task = mock
+        @mock_task = stub
         @mock_task.responds_like(Win32::TaskScheduler.new)
         @mock_task.stubs(:exists?).returns(true)
         @mock_task.stubs(:activate)
@@ -1469,7 +1754,7 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
       end
 
       it 'should use nil for user and password when setting the user to the SYSTEM account' do
-        Puppet::Util::Windows::Security.stubs(:name_to_sid).with('system').returns('SYSTEM SID')
+        Puppet::Util::Windows::SID.stubs(:name_to_sid).with('system').returns('SYSTEM SID')
 
         resource = Puppet::Type.type(:scheduled_task).new(
           :name    => 'Test Task',
@@ -1483,7 +1768,7 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
       end
 
       it 'should use the specified user and password when setting the user to anything other than SYSTEM' do
-        Puppet::Util::Windows::Security.stubs(:name_to_sid).with('my_user_name').returns('SID A')
+        Puppet::Util::Windows::SID.stubs(:name_to_sid).with('my_user_name').returns('SID A')
 
         resource = Puppet::Type.type(:scheduled_task).new(
           :name     => 'Test Task',
@@ -1517,7 +1802,7 @@ describe Puppet::Type.type(:scheduled_task).provider(:win32_taskscheduler), :if 
       @arguments   = '/a /list /of /arguments'
       @working_dir = 'C:\Windows\Some\Directory'
 
-      @mock_task = mock
+      @mock_task = stub
       @mock_task.responds_like(Win32::TaskScheduler.new)
       @mock_task.stubs(:exists?).returns(true)
       @mock_task.stubs(:activate)

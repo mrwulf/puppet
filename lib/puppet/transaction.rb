@@ -1,5 +1,6 @@
 require 'puppet'
 require 'puppet/util/tagging'
+require 'puppet/util/skip_tags'
 require 'puppet/application'
 require 'digest/sha1'
 require 'set'
@@ -47,13 +48,42 @@ class Puppet::Transaction
     @prefetched_providers = Hash.new { |h,k| h[k] = {} }
   end
 
+  # Invoke the pre_run_check hook in every resource in the catalog.
+  # This should (only) be called by Transaction#evaluate before applying
+  # the catalog.
+  #
+  # @see Puppet::Transaction#evaluate
+  # @see Puppet::Type#pre_run_check
+  # @raise [Puppet::Error] If any pre-run checks failed.
+  # @return [void]
+  def perform_pre_run_checks
+    prerun_errors = {}
+
+    @catalog.vertices.each do |res|
+      begin
+        res.pre_run_check
+      rescue Puppet::Error => detail
+        prerun_errors[res] = detail
+      end
+    end
+
+    unless prerun_errors.empty?
+      prerun_errors.each do |res, detail|
+        res.log_exception(detail)
+      end
+      raise Puppet::Error, "Some pre-run checks failed"
+    end
+  end
+
   # This method does all the actual work of running a transaction.  It
   # collects all of the changes, executes them, and responds to any
   # necessary events.
   def evaluate(&block)
     block ||= method(:eval_resource)
-    generator = AdditionalResourceGenerator.new(@catalog, relationship_graph, @prioritizer)
+    generator = AdditionalResourceGenerator.new(@catalog, nil, @prioritizer)
     @catalog.vertices.each { |resource| generator.generate_additional_resources(resource) }
+
+    perform_pre_run_checks
 
     Puppet.info "Applying configuration version '#{catalog.version}'" if catalog.version
 
@@ -76,6 +106,7 @@ class Puppet::Transaction
     overly_deferred_resource_handler = lambda do |resource|
       # We don't automatically assign unsuitable providers, so if there
       # is one, it must have been selected by the user.
+      return if missing_tags?(resource)
       if resource.provider
         resource.err "Provider #{resource.provider.class.name} is not functional on this host"
       else
@@ -105,6 +136,9 @@ class Puppet::Transaction
       end
     end
 
+    # Generate the relationship graph, set up our generator to use it
+    # for eval_generate, then kick off our traversal.
+    generator.relationship_graph = relationship_graph
     relationship_graph.traverse(:while => continue_while,
                                 :pre_process => pre_process,
                                 :overly_deferred_resource_handler => overly_deferred_resource_handler,
@@ -138,7 +172,7 @@ class Puppet::Transaction
   end
 
   def relationship_graph
-    catalog.relationship_graph
+    catalog.relationship_graph(@prioritizer)
   end
 
   def resource_status(resource)
@@ -150,6 +184,10 @@ class Puppet::Transaction
     self.tags = Puppet[:tags] unless defined?(@tags)
 
     super
+  end
+
+  def skip_tags
+    @skip_tags ||= Puppet::Util::SkipTags.new(Puppet[:skip_tags]).tags
   end
 
   def prefetch_if_necessary(resource)
@@ -180,15 +218,16 @@ class Puppet::Transaction
 
   # Evaluate a single resource.
   def eval_resource(resource, ancestor = nil)
+    propagate_failure(resource)
     if skip?(resource)
       resource_status(resource).skipped = true
+      resource.debug("Resource is being skipped, unscheduling all events")
+      event_manager.dequeue_all_events_for_resource(resource)
     else
       resource_status(resource).scheduled = true
       apply(resource, ancestor)
+      event_manager.process_events(resource)
     end
-
-    # Check to see if there are any events queued for this resource
-    event_manager.process_events(resource)
   end
 
   def failed?(resource)
@@ -197,54 +236,43 @@ class Puppet::Transaction
 
   # Does this resource have any failed dependencies?
   def failed_dependencies?(resource)
-    # First make sure there are no failed dependencies.  To do this,
-    # we check for failures in any of the vertexes above us.  It's not
-    # enough to check the immediate dependencies, which is why we use
-    # a tree from the reversed graph.
-    found_failed = false
-
-
     # When we introduced the :whit into the graph, to reduce the combinatorial
     # explosion of edges, we also ended up reporting failures for containers
     # like class and stage.  This is undesirable; while just skipping the
     # output isn't perfect, it is RC-safe. --daniel 2011-06-07
     suppress_report = (resource.class == Puppet::Type.type(:whit))
 
-    relationship_graph.dependencies(resource).each do |dep|
-      next unless failed?(dep)
-      found_failed = true
-
+    s = resource_status(resource)
+    if s && s.dependency_failed?
       # See above. --daniel 2011-06-06
       unless suppress_report then
-        resource.notice "Dependency #{dep} has failures: #{resource_status(dep).failed}"
+        s.failed_dependencies.each do |dep|
+          resource.notice "Dependency #{dep} has failures: #{resource_status(dep).failed}"
+        end
       end
     end
 
-    found_failed
+    s && s.dependency_failed?
   end
 
-  # A general method for recursively generating new resources from a
-  # resource.
-  def generate_additional_resources(resource)
-    return unless resource.respond_to?(:generate)
-    begin
-      made = resource.generate
-    rescue => detail
-      resource.log_exception(detail, "Failed to generate additional resources using 'generate': #{detail}")
-    end
-    return unless made
-    made = [made] unless made.is_a?(Array)
-    made.uniq.each do |res|
-      begin
-        res.tag(*resource.tags)
-        @catalog.add_resource(res)
-        res.finish
-        add_conditional_directed_dependency(resource, res)
-        generate_additional_resources(res)
-      rescue Puppet::Resource::Catalog::DuplicateResourceError
-        res.info "Duplicate generated resource; skipping"
+  # We need to know if a resource has any failed dependencies before
+  # we try to process it. We keep track of this by keeping a list on
+  # each resource of the failed dependencies, and incrementally
+  # computing it as the union of the failed dependencies of each
+  # first-order dependency. We have to do this as-we-go instead of
+  # up-front at failure time because the graph may be mutated as we
+  # walk it.
+  def propagate_failure(resource)
+    failed = Set.new
+    relationship_graph.direct_dependencies_of(resource).each do |dep|
+      if (s = resource_status(dep))
+        failed.merge(s.failed_dependencies) if s.dependency_failed?
+        if s.failed?
+          failed.add(dep)
+        end
       end
     end
+    resource_status(resource).failed_dependencies = failed.to_a
   end
 
   # Should we ignore tags?
@@ -254,7 +282,7 @@ class Puppet::Transaction
 
   def resources_by_provider(type_name, provider_name)
     unless @resources_by_provider
-      @resources_by_provider = Hash.new { |h, k| h[k] = Hash.new { |h, k| h[k] = {} } }
+      @resources_by_provider = Hash.new { |h, k| h[k] = Hash.new { |h1, k1| h1[k1] = {} } }
 
       @catalog.vertices.each do |resource|
         if resource.class.attrclass(:provider)
@@ -275,7 +303,7 @@ class Puppet::Transaction
     Puppet.debug "Prefetching #{provider_class.name} resources for #{type_name}"
     begin
       provider_class.prefetch(resources)
-    rescue => detail
+    rescue LoadError, Puppet::MissingCommand => detail
       Puppet.log_exception(detail, "Could not prefetch #{type_name} provider '#{provider_class.name}': #{detail}")
     end
     @prefetched_providers[type_name][provider_class.name] = true
@@ -292,7 +320,9 @@ class Puppet::Transaction
 
   # Should this resource be skipped?
   def skip?(resource)
-    if missing_tags?(resource)
+    if skip_tags?(resource)
+      resource.debug "Skipping with skip tags #{skip_tags.join(", ")}"
+    elsif missing_tags?(resource)
       resource.debug "Not tagged with #{tags.join(", ")}"
     elsif ! scheduled?(resource)
       resource.debug "Not scheduled"
@@ -320,13 +350,6 @@ class Puppet::Transaction
     resource.appliable_to_host? && resource.appliable_to_device?
   end
 
-  def handle_qualified_tags( qualified )
-    # The default behavior of Puppet::Util::Tagging is
-    # to split qualified tags into parts. That would cause
-    # qualified tags to match too broadly here.
-    return
-  end
-
   # Is this resource tagged appropriately?
   def missing_tags?(resource)
     return false if ignore_tags?
@@ -334,7 +357,25 @@ class Puppet::Transaction
 
     not resource.tagged?(*tags)
   end
+
+  def skip_tags?(resource)
+    return false if ignore_tags?
+    return false if skip_tags.empty?
+
+    resource.tagged?(*skip_tags)
+  end
+
+  def split_qualified_tags?
+    false
+  end
+
+  # These two methods are only made public to enable the existing spec tests to run
+  # under rspec 3 (apparently rspec 2 didn't enforce access controls?). Please do not
+  # treat these as part of a public API.
+  # Possible future improvement: rewrite to not require access to private methods.
+  public :skip?
+  public :missing_tags?
+
 end
 
 require 'puppet/transaction/report'
-

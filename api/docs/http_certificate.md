@@ -4,37 +4,37 @@ Certificate
 The `certificate` endpoint returns the certificate for the specified name,
 which might be either a standard certname or `ca`.
 
-The returned certificate is always in the `.pem` format.
+Under Puppet Server's CA service, the `environment` parameter is ignored and can
+be omitted. Under a Rack or WEBrick Puppet master, `environment` is required and
+must be a valid environment, but it has no effect on the response.
 
 Find
 ----
 
 Get a certificate.
 
-    GET /:environment/certificate/:nodename
+    GET /puppet-ca/v1/certificate/:nodename?environment=:environment
 
 
 ### Supported HTTP Methods
 
 GET
 
-### Supported Format
+### Supported Response Formats
 
-Accept: s
+s (denotes a string of text)
+
+The returned certificate is always in the `.pem` format.
 
 ### Parameters
 
 None
 
-### Notes
-
-The environment field is ignored.
-
 ### Responses
 
 #### Certificate found
 
-    GET /env/certificate/elmo.mydomain.com
+    GET /puppet-ca/v1/certificate/elmo.mydomain.com?environment=env
 
     HTTP 200 OK
     Content-Type: text/plain
@@ -75,27 +75,27 @@ The environment field is ignored.
 
 #### Certificate not found
 
-    GET /env/certificate/certificate_does_not_exist
+    GET /puppet-ca/v1/certificate/certificate_does_not_exist?environment=env
 
-    HTTP 404 Not Found: Could not find certificate certificate_does_not_exist
+    HTTP 404 Not Found
     Content-Type: text/plain
 
     Not Found: Could not find certificate certificate_does_not_exist
 
 #### No Certificate name given
 
-    GET /env/certificate/
+    GET /puppet-ca/v1/certificate?environment=env
 
-    HTTP/1.1 400 No request key specified in /env/certificate/
+    HTTP/1.1 400 Bad Request
     Content-Type: text/plain
 
-    No request key specified in /env/certificate/
+    No request key specified in /puppet-ca/v1/certificate
 
 #### Master is not a CA
 
-    GET /env/certificate/valid_certificate
+    GET /puppet/v1/certificate/valid_certificate?environment=env
 
-    HTTP/1.1 400 this master is not a CA
+    HTTP/1.1 400 Bad Request
     Content-Type: text/plain
 
     this master is not a CA
@@ -104,5 +104,5 @@ The environment field is ignored.
 Schema
 ------
 
-A certificate response body is not structured data according to any standard scheme such as
+A `certificate` response body is not structured data according to any standard scheme such as
 json/pson/yaml, so no schema is applicable.

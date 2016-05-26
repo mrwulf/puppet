@@ -20,6 +20,16 @@ module Manager
     }
   end
 
+  # Clears any types that were used but absent when types were last loaded.
+  # @note Used after each catalog compile when always_retry_plugins is false
+  # @api private
+  #
+  def clear_misses
+    unless @types.nil?
+      @types.delete_if {|_, v| v.nil? }
+    end
+  end
+
   # Iterates over all already loaded Type subclasses.
   # @yield [t] a block receiving each type
   # @yieldparam t [Puppet::Type] each defined type
@@ -49,9 +59,8 @@ module Manager
   # method is kept).
   #
   # @param name [String] the name of the type to create or redefine.
-  # @param options [Hash] options passed on to {Puppet::Util::ClassGen#genclass} as the option `:attributes` after
-  #   first having removed any present `:parent` option.
-  # @option options [Puppet::Type] :parent the parent (super type) of this type. If nil, the default is
+  # @param options [Hash] options passed on to {Puppet::Util::ClassGen#genclass} as the option `:attributes`.
+  # @option options [Puppet::Type]
   #   Puppet::Type. This option is not passed on as an attribute to genclass.
   # @yield [ ] a block evaluated in the context of the created class, thus allowing further detailing of
   #   that class.
@@ -64,7 +73,6 @@ module Manager
     # Handle backward compatibility
     unless options.is_a?(Hash)
       Puppet.warning "Puppet::Type.newtype(#{name}) now expects a hash as the second argument, not #{options.inspect}"
-      options = {:parent => options}
     end
 
     # First make sure we don't have a method sitting around
@@ -85,15 +93,11 @@ module Manager
 
     options = symbolize_options(options)
 
-    if parent = options[:parent]
-      options.delete(:parent)
-    end
-
     # Then create the class.
 
     klass = genclass(
       name,
-      :parent => (parent || Puppet::Type),
+      :parent => Puppet::Type,
       :overwrite => true,
       :hash => @types,
       :attributes => options,
@@ -119,8 +123,12 @@ module Manager
     klass.providerloader = Puppet::Util::Autoload.new(klass, "puppet/provider/#{klass.name.to_s}")
 
     # We have to load everything so that we can figure out the default provider.
-    klass.providerloader.loadall
+    klass.providerloader.loadall Puppet.lookup(:current_environment)
     klass.providify unless klass.providers.empty?
+
+    loc = block_given? ? block.source_location : nil
+    uri = loc.nil? ? nil : URI("#{Puppet::Util.path_to_uri(loc[0])}?line=#{loc[1]}")
+    Puppet::Pops::Loaders.register_runtime3_type(name, uri)
 
     klass
   end
@@ -142,22 +150,29 @@ module Manager
   # @return [Puppet::Type, nil] the type or nil if the type was not defined and could not be loaded
   #
   def type(name)
+    # Avoid loading if name obviously is not a type name
+    if name.to_s.include?(':')
+      return nil
+    end
+
     @types ||= {}
 
     # We are overwhelmingly symbols here, which usually match, so it is worth
     # having this special-case to return quickly.  Like, 25K symbols vs. 300
     # strings in this method. --daniel 2012-07-17
-    return @types[name] if @types[name]
+    return @types[name] if @types.include? name
 
     # Try mangling the name, if it is a string.
     if name.is_a? String
       name = name.downcase.intern
-      return @types[name] if @types[name]
+      return @types[name] if @types.include? name
     end
-
     # Try loading the type.
-    if typeloader.load(name, Puppet::Node::Environment.current)
+    if typeloader.load(name, Puppet.lookup(:current_environment))
       Puppet.warning "Loaded puppet/type/#{name} but no class was created" unless @types.include? name
+    elsif !Puppet[:always_retry_plugins]
+      # PUP-5482 - Only look for a type once if plugin retry is disabled
+      @types[name] = nil
     end
 
     # ...and I guess that is that, eh.
@@ -170,7 +185,7 @@ module Manager
   # @api private
   def typeloader
     unless defined?(@typeloader)
-      @typeloader = Puppet::Util::Autoload.new(self, "puppet/type", :wrap => false)
+      @typeloader = Puppet::Util::Autoload.new(self, "puppet/type")
     end
 
     @typeloader

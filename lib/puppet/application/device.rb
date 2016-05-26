@@ -1,7 +1,6 @@
 require 'puppet/application'
 require 'puppet/util/network_device'
 
-
 class Puppet::Application::Device < Puppet::Application
 
   run_mode :agent
@@ -67,7 +66,7 @@ puppet-device(8) -- Manage remote network devices
 SYNOPSIS
 --------
 Retrieves all configurations from the puppet master and apply
-them to the remote devices configured in /etc/puppet/device.conf.
+them to the remote devices configured in /etc/puppetlabs/puppet/device.conf.
 
 Currently must be run out periodically, using cron or something similar.
 
@@ -85,7 +84,7 @@ retrieve its configuration and apply it.
 
 USAGE NOTES
 -----------
-One need a /etc/puppet/device.conf file with the following content:
+One need a /etc/puppetlabs/puppet/device.conf file with the following content:
 
 [remote.device.fqdn]
 type <type>
@@ -107,7 +106,7 @@ Supported url must conforms to:
 
 OPTIONS
 -------
-Note that any configuration parameter that's valid in the configuration file
+Note that any setting that's valid in the configuration file
 is also a valid long argument.  For example, 'server' is a valid configuration
 parameter, so you can specify '--server <servername>' as an argument.
 
@@ -116,17 +115,23 @@ parameter, so you can specify '--server <servername>' as an argument.
 
 * --detailed-exitcodes:
   Provide transaction information via exit codes. If this is enabled, an exit
-  code of '2' means there were changes, an exit code of '4' means there were
-  failures during the transaction, and an exit code of '6' means there were both
-  changes and failures.
+  code of '1' means at least one device had a compile failure, an exit code of
+  '2' means at least one device had resource changes, and an exit code of '4'
+  means at least one device had resource failures. Exit codes of '3', '5', '6',
+  or '7' means that a bitwise combination of the preceeding exit codes happened.
 
 * --help:
   Print this help message
 
 * --logdest:
-  Where to send messages.  Choose between syslog, the console, and a log file.
-  Defaults to sending messages to syslog, or the console if debugging or
-  verbosity is enabled.
+  Where to send log messages. Choose between 'syslog' (the POSIX syslog
+  service), 'console', or the path to a log file. If debugging or verbosity is
+  enabled, this defaults to 'console'. Otherwise, it defaults to 'syslog'.
+
+  A path ending with '.json' will receive structured output in JSON format. The
+  log file will not have an ending ']' automatically written to it due to the
+  appending nature of logging. It must be appended manually to make the content
+  valid JSON.
 
 * --verbose:
   Turn on verbose reporting.
@@ -168,14 +173,18 @@ Licensed under the Apache 2.0 License
       Puppet.err "No device found in #{Puppet[:deviceconfig]}"
       exit(1)
     end
-    devices.each_value do |device|
+    returns = devices.collect do |devicename,device|
       begin
-        Puppet.info "starting applying configuration to #{device.name} at #{device.url}"
+        device_url = URI.parse(device.url)
+        # Handle nil scheme & port
+        scheme = "#{device_url.scheme}://" if device_url.scheme
+        port = ":#{device_url.port}" if device_url.port
+        Puppet.info "starting applying configuration to #{device.name} at #{scheme}#{device_url.host}#{port}#{device_url.path}"
 
         # override local $vardir and $certname
-        Puppet.settings.set_value(:confdir, ::File.join(Puppet[:devicedir], device.name), :cli)
-        Puppet.settings.set_value(:vardir, ::File.join(Puppet[:devicedir], device.name), :cli)
-        Puppet.settings.set_value(:certname, device.name, :cli)
+        Puppet[:confdir] = ::File.join(Puppet[:devicedir], device.name)
+        Puppet[:vardir] = ::File.join(Puppet[:devicedir], device.name)
+        Puppet[:certname] = device.name
 
         # this will reload and recompute default settings and create the devices sub vardir, or we hope so :-)
         Puppet.settings.use :main, :agent, :ssl
@@ -190,15 +199,27 @@ Licensed under the Apache 2.0 License
 
         require 'puppet/configurer'
         configurer = Puppet::Configurer.new
-        configurer.run(:network_device => true, :pluginsync => Puppet[:pluginsync])
+        configurer.run(:network_device => true, :pluginsync => Puppet::Configurer.should_pluginsync?)
       rescue => detail
         Puppet.log_exception(detail)
+        # If we rescued an error, then we return 1 as the exit code
+        1
       ensure
-        Puppet.settings.set_value(:vardir, vardir, :cli)
-        Puppet.settings.set_value(:confdir, confdir, :cli)
-        Puppet.settings.set_value(:certname, certname, :cli)
+        Puppet[:vardir] = vardir
+        Puppet[:confdir] = confdir
+        Puppet[:certname] = certname
         Puppet::SSL::Host.reset
       end
+    end
+    if ! returns or returns.compact.empty?
+      exit(1)
+    elsif options[:detailed_exitcodes]
+      # Bitwise OR the return codes together, puppet style
+      exit(returns.compact.reduce(:|))
+    elsif returns.include? 1
+      exit(1)
+    else
+      exit(0)
     end
   end
 
@@ -220,10 +241,6 @@ Licensed under the Apache 2.0 License
     end
 
     Puppet.settings.use :main, :agent, :device, :ssl
-
-    # Always ignoreimport for agent. It really shouldn't even try to import,
-    # but this is just a temporary band-aid.
-    Puppet[:ignoreimport] = true
 
     # We need to specify a ca location for all of the SSL-related
     # indirected classes to work; in fingerprint mode we just need

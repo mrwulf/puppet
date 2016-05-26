@@ -6,9 +6,6 @@ Puppet::Type.type(:package).provide :ports, :parent => :freebsd, :source => :fre
     :portuninstall => "/usr/local/sbin/pkg_deinstall",
     :portinfo => "/usr/sbin/pkg_info"
 
-  defaultfor :operatingsystem => :freebsd
-
-  # I hate ports
   %w{INTERACTIVE UNAME}.each do |var|
     ENV.delete(var) if ENV.include?(var)
   end
@@ -31,7 +28,7 @@ Puppet::Type.type(:package).provide :ports, :parent => :freebsd, :source => :fre
     begin
       output = portversion(*cmd)
     rescue Puppet::ExecutionFailure
-      raise Puppet::Error.new(output)
+      raise Puppet::Error.new(output, $!)
     end
     line = output.split("\n").pop
 

@@ -15,16 +15,18 @@ end
 agents.each do |agent|
   step "ZFS: cleanup"
   clean agent
+
   step "ZFS: setup"
   setup agent
+
   step "ZFS: ensure clean slate"
-  apply_manifest_on(agent, 'zfs { "tstpool/tstfs": ensure=>absent}') do
-    assert_match( /Finished catalog run in .*/, result.stdout, "err: #{agent}")
-  end
+  apply_manifest_on(agent, 'zfs { "tstpool/tstfs": ensure=>absent}')
+
   step "ZFS: basic - ensure it is created"
   apply_manifest_on(agent, 'zfs {"tstpool/tstfs": ensure=>present}') do
     assert_match( /ensure: created/, result.stdout, "err: #{agent}")
   end
+
   step "ZFS: idempotence - create"
   apply_manifest_on(agent, 'zfs {"tstpool/tstfs": ensure=>present}') do
     assert_no_match( /ensure: created/, result.stdout, "err: #{agent}")
@@ -42,12 +44,11 @@ agents.each do |agent|
 
   step "ZFS: change mount point and verify"
   apply_manifest_on(agent, 'zfs {"tstpool/tstfs": ensure=>present,  mountpoint=>"/ztstpool/mnt2"}') do
-    assert_match( /mountpoint changed '.ztstpool.mnt' to '.ztstpool.mnt2'/, result.stdout, "err: #{agent}")
+    assert_match( /mountpoint changed '.ztstpool.mnt'.* to '.ztstpool.mnt2'/, result.stdout, "err: #{agent}")
   end
 
   step "ZFS: ensure can be removed."
   apply_manifest_on(agent, 'zfs { "tstpool/tstfs": ensure=>absent}') do
     assert_match( /ensure: removed/, result.stdout, "err: #{agent}")
   end
-
 end

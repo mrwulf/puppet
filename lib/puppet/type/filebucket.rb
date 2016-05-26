@@ -1,7 +1,7 @@
 module Puppet
   require 'puppet/file_bucket/dipper'
 
-  newtype(:filebucket) do
+  Type.newtype(:filebucket) do
     @doc = <<-EOT
       A repository for storing and retrieving file content by MD5 checksum. Can
       be local to each agent node, or centralized on a puppet master server. All
@@ -21,13 +21,13 @@ module Puppet
         puppet master's filebucket with the _desired_ content for each file,
         then instructs the agent to retrieve the content for a specific
         checksum. For more details,
-        [see the `static_compiler` section in the catalog indirection docs](http://docs.puppetlabs.com/references/latest/indirection.html#catalog).
+        [see the `static_compiler` section in the catalog indirection docs](https://docs.puppetlabs.com/puppet/latest/reference/indirection.html#catalog).
 
       To use a central filebucket for backups, you will usually want to declare
       a filebucket resource and a resource default for the `backup` attribute
       in site.pp:
 
-          # /etc/puppet/manifests/site.pp
+          # /etc/puppetlabs/puppet/manifests/site.pp
           filebucket { 'main':
             path   => false,                # This is required for remote filebuckets.
             server => 'puppet.example.com', # Optional; defaults to the configured puppet master.

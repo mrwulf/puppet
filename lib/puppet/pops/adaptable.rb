@@ -15,7 +15,8 @@
 #   be exploited as the implementation of _being adaptable_ may change in the future.
 # @api private
 #
-module Puppet::Pops::Adaptable
+module Puppet::Pops
+module Adaptable
   # Base class for an Adapter.
   #
   # A typical adapter just defines some accessors.
@@ -67,7 +68,7 @@ module Puppet::Pops::Adaptable
     # @raise [ArgumentError] if the object is not adaptable
     #
     def self.get(o)
-      attr_name = :"@#{instance_var_name(self.name)}"
+      attr_name = self_attr_name
       if o.instance_variable_defined?(attr_name)
         o.instance_variable_get(attr_name)
       else
@@ -92,7 +93,7 @@ module Puppet::Pops::Adaptable
     # @raise [ArgumentError] if the given object o is not adaptable
     #
     def self.adapt(o, &block)
-      attr_name = :"@#{instance_var_name(self.name)}"
+      attr_name = self_attr_name
       adapter = if o.instance_variable_defined?(attr_name) && value = o.instance_variable_get(attr_name)
         value
       else
@@ -145,7 +146,7 @@ module Puppet::Pops::Adaptable
     # @return [nil] if the adapter has not been set
     #
     def self.clear(o)
-      attr_name = :"@#{instance_var_name(self.name)}"
+      attr_name = self_attr_name
       if o.instance_variable_defined?(attr_name)
         o.send(:remove_instance_variable, attr_name)
       else
@@ -175,16 +176,29 @@ module Puppet::Pops::Adaptable
       adapter
     end
 
+    DOUBLE_COLON = '::'
+    USCORE = '_'
+
     # Returns a suitable instance variable name given a class name.
     # The returned string is the fully qualified name of a class with '::' replaced by '_' since
     # '::' is not allowed in an instance variable name.
     # @param name [String] the fully qualified name of a class
     # @return [String] the name with all '::' replaced by '_'
     # @api private
-    # @private
     #
     def self.instance_var_name(name)
-      name.split("::").join('_')
+      name.split(DOUBLE_COLON).join(USCORE)
+    end
+
+    # Returns a suitable instance variable name for the _name_ of this instance. The name is created by calling
+    # Adapter#instance_var_name and then cached.
+    # @return [String] the instance variable name for _name_
+    # @api private
+    #
+    def self.self_attr_name
+      @attr_name_sym ||= :"@#{instance_var_name(self.name)}"
     end
   end
 end
+end
+

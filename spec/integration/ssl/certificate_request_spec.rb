@@ -10,11 +10,8 @@ describe Puppet::SSL::CertificateRequest do
     # Get a safe temporary file
     dir = tmpdir("csr_integration_testing")
 
-    Puppet.settings.clear
-
     Puppet.settings[:confdir] = dir
     Puppet.settings[:vardir] = dir
-    Puppet.settings[:group] = Process.gid
 
     Puppet::SSL::Host.ca_location = :none
 
@@ -24,10 +21,6 @@ describe Puppet::SSL::CertificateRequest do
 
     # This is necessary so the terminus instances don't lie around.
     Puppet::SSL::CertificateRequest.indirection.termini.clear
-  end
-
-  after do
-    Puppet.settings.clear
   end
 
   it "should be able to generate CSRs" do
@@ -42,13 +35,13 @@ describe Puppet::SSL::CertificateRequest do
     @csr.generate(@key)
     Puppet::SSL::CertificateRequest.indirection.save(@csr)
 
-    Puppet::SSL::CertificateRequest.indirection.find("luke.madstop.com").should be_instance_of(Puppet::SSL::CertificateRequest)
+    expect(Puppet::SSL::CertificateRequest.indirection.find("luke.madstop.com")).to be_instance_of(Puppet::SSL::CertificateRequest)
   end
 
   it "should save the completely CSR when saving" do
     @csr.generate(@key)
     Puppet::SSL::CertificateRequest.indirection.save(@csr)
 
-    Puppet::SSL::CertificateRequest.indirection.find("luke.madstop.com").content.to_s.should == @csr.content.to_s
+    expect(Puppet::SSL::CertificateRequest.indirection.find("luke.madstop.com").content.to_s).to eq(@csr.content.to_s)
   end
 end

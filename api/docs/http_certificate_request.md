@@ -2,17 +2,19 @@ Certificate Request
 =============
 
 The `certificate_request` endpoint submits a Certificate Signing Request (CSR)
-to the master.  The master must be configured to be a CA.  The returned
+to the master. The master must be configured to be a CA. The returned
 CSR is always in the `.pem` format.
 
-In all requests the `:environment` must be given, but it has no bearing on the request. CSRs are not managed within environments, all CSRs are global.
+Under Puppet Server's CA service, the `environment` parameter is ignored and can
+be omitted. Under a Rack or WEBrick Puppet master, `environment` is required and
+must be a valid environment, but it has no effect on the response.
 
 Find
 ----
 
 Get a submitted CSR
 
-    GET /:environment/certificate_request/:nodename
+    GET /puppet-ca/v1/certificate_request/:nodename?environment=:environment
     Accept: s
 
 Save
@@ -20,7 +22,7 @@ Save
 
 Submit a CSR
 
-    PUT /:environment/certificate_request/:nodename
+    PUT /puppet-ca/v1/certificate_request/:nodename?environment=:environment
     Content-Type: text/plain
 
 Note: The `:nodename` must match the Common Name on the submitted CSR.
@@ -31,9 +33,12 @@ specifically a CSR in PEM format.
 Search
 ----
 
+**Note:** The plural `certificate_requests` endpoint is a legacy feature. Puppet
+Server doesn't support it, and we don't plan to add support in the future.
+
 List submitted CSRs
 
-    GET /:environment/certificate_requests/:ignored_pattern
+    GET /puppet-ca/v1/certificate_requests/:ignored_pattern?environment=:environment
     Accept: s
 
 The `:ignored_pattern` parameter is not used, but must still be provided.
@@ -43,7 +48,7 @@ Destroy
 
 Delete a submitted CSR
 
-    DELETE /:environment/certificate_request/:nodename
+    DELETE /puppet-ca/v1/certificate_request/:nodename?environment=:environment
     Accept: s
 
 ### Supported HTTP Methods
@@ -54,9 +59,11 @@ Destroy actions. It is not recommended that you change the default settings.
 
 GET, PUT, DELETE
 
-### Supported Format
+### Supported Response Formats
 
-Accept: s
+s (denotes a string of text)
+
+The returned CSR is always in the `.pem` format.
 
 ### Parameters
 
@@ -66,7 +73,7 @@ None
 
 #### CSR found
 
-    GET /env/certificate_request/agency
+    GET /puppet-ca/v1/certificate_request/agency?environment=env
 
     HTTP/1.1 200 OK
     Content-Type: text/plain
@@ -85,25 +92,25 @@ None
 
 #### CSR not found
 
-    GET /env/certificate_request/does_not_exist
+    GET /puppet-ca/v1/certificate_request/does_not_exist?environment=env
 
-    HTTP/1.1 404 Not Found: Could not find certificate_request does_not_exist
+    HTTP/1.1 404 Not Found
     Content-Type: text/plain
 
     Not Found: Could not find certificate_request does_not_exist
 
 #### No node name given
 
-    GET /env/certificate_request/
+    GET /puppet-ca/v1/certificate_request?environment=env
 
-    HTTP/1.1 400 No request key specified in /env/certificate_request/
+    HTTP/1.1 400 Bad Request
     Content-Type: text/plain
 
-    No request key specified in /env/certificate_request/
+    No request key specified in /puppet-ca/v1/certificate_request
 
 #### Delete a CSR that exists
 
-    DELETE /production/certificate_request/agency
+    DELETE /puppet-ca/v1/certificate_request/agency?environment=production
     Accept: s
 
     HTTP/1.1 200 OK
@@ -113,7 +120,7 @@ None
 
 #### Delete a CSR that does not exists
 
-    DELETE /production/certificate_request/missing
+    DELETE /puppet-ca/v1/certificate_request/missing?environment=production
     Accept: s
 
     HTTP/1.1 200 OK
@@ -123,7 +130,7 @@ None
 
 #### Retrieve all CSRs
 
-     GET /production/certificate_requests/ignored
+     GET /puppet-ca/v1/certificate_requests/ignored?environment=production
      Accept: s
 
      HTTP/1.1 200 OK
@@ -159,5 +166,5 @@ The CSR PEMs are separated by "\n---\n"
 Schema
 ------
 
-A certificate_request response body is not structured data according to any
+A `certificate_request` response body is not structured data according to any
 standard scheme such as json/pson/yaml, so no schema is applicable.

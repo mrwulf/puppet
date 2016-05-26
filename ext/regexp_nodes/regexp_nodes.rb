@@ -2,7 +2,7 @@
 
 # = Synopsis
 # This is an external node classifier script, after
-# http://docs.puppetlabs.com/guides/external_nodes.html
+# https://docs.puppetlabs.com/guides/external_nodes.html
 #
 # = Usage
 # regexp_nodes.rb <host>
@@ -152,7 +152,7 @@ class ExternalNode
         patternlist <<  pattern
         log("appending [#{pattern}] to patternlist for [#{filepath}]")
       }
-    rescue Exception
+    rescue StandardError
       log("Problem reading #{filepath}: #{$!}",:err)
       exit(1)
     end

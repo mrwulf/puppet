@@ -1,5 +1,8 @@
 require 'puppet/util/tagging'
 require 'puppet/util/classgen'
+require 'puppet/util/psych_support'
+require 'puppet/network/format_support'
+require 'facter'
 
 # Pass feedback to the user.  Log levels are modeled after syslog's, and it is
 # expected that that will be the most common log destination.  Supports
@@ -7,7 +10,9 @@ require 'puppet/util/classgen'
 class Puppet::Util::Log
   include Puppet::Util
   extend Puppet::Util::ClassGen
+  include Puppet::Util::PsychSupport
   include Puppet::Util::Tagging
+  include Puppet::Network::FormatSupport
 
   @levels = [:debug,:info,:notice,:warning,:err,:alert,:emerg,:crit]
   @loglevel = 2
@@ -103,6 +108,9 @@ class Puppet::Util::Log
     raise Puppet::DevError, "Invalid loglevel #{level}" unless @levels.include?(level)
 
     @loglevel = @levels.index(level)
+
+    # Enable or disable Facter debugging
+    Facter.debugging(level == :debug) if Facter.respond_to? :debugging
   end
 
   def Log.levels
@@ -231,13 +239,13 @@ class Puppet::Util::Log
     @levels.include?(level)
   end
 
-  def self.from_pson(data)
+  def self.from_data_hash(data)
     obj = allocate
     obj.initialize_from_hash(data)
     obj
   end
 
-  attr_accessor :time, :remote, :file, :line, :source
+  attr_accessor :time, :remote, :file, :line, :pos, :source, :issue_code, :environment, :node, :backtrace
   attr_reader :level, :message
 
   def initialize(args)
@@ -251,9 +259,10 @@ class Puppet::Util::Log
       tags.each { |t| self.tag(t) }
     end
 
-    [:file, :line].each do |attr|
+    # Don't add these unless defined (preserve 3.x API as much as possible)
+    [:file, :line, :pos, :issue_code, :environment, :node, :backtrace].each do |attr|
       next unless value = args[attr]
-      send(attr.to_s + "=", value)
+      send(attr.to_s + '=', value)
     end
 
     Log.newmessage(self)
@@ -263,29 +272,51 @@ class Puppet::Util::Log
     @level = data['level'].intern
     @message = data['message']
     @source = data['source']
-    @tags = data['tags']
+    @tags = Puppet::Util::TagSet.new(data['tags'])
     @time = data['time']
     if @time.is_a? String
       @time = Time.parse(@time)
     end
-    @file = data['file'] if data['file']
-    @line = data['line'] if data['line']
+    # Don't add these unless defined (preserve 3.x API as much as possible)
+    %w(file line pos issue_code environment node backtrace).each do |name|
+      next unless value = data[name]
+      send(name + '=', value)
+    end
   end
 
   def to_hash
+    self.to_data_hash
+  end
+
+  def to_data_hash
     {
       'level' => @level,
-      'message' => @message,
+      'message' => to_s,
       'source' => @source,
-      'tags' => @tags,
+      'tags' => @tags.to_a,
       'time' => @time.iso8601(9),
       'file' => @file,
       'line' => @line,
     }
   end
 
-  def to_pson
-    self.to_hash.to_pson
+  def to_structured_hash
+    hash = {
+      'level' => @level,
+      'message' => @message,
+      'source' => @source,
+      'tags' => @tags.to_a,
+      'time' => @time.iso8601(9),
+    }
+    %w(file line pos issue_code environment node backtrace).each do |name|
+      attr_name = "@#{name}"
+      hash[name] = instance_variable_get(attr_name) if instance_variable_defined?(attr_name)
+    end
+    hash
+  end
+
+  def to_pson(*args)
+    to_data_hash.to_pson(*args)
   end
 
   def message=(msg)
@@ -306,7 +337,7 @@ class Puppet::Util::Log
   # If they pass a source in to us, we make sure it is a string, and
   # we retrieve any tags we can.
   def source=(source)
-    if source.respond_to?(:path)
+    if defined?(Puppet::Type) && source.is_a?(Puppet::Type)
       @source = source.path
       source.tags.each { |t| tag(t) }
       self.file = source.file
@@ -321,7 +352,30 @@ class Puppet::Util::Log
   end
 
   def to_s
-    message
+    msg = message
+
+    # Issue based messages do not have details in the message. It
+    # must be appended here
+    unless issue_code.nil?
+      msg = "Could not parse for environment #{environment}: #{msg}" unless environment.nil?
+      if file && line && pos
+        msg = "#{msg} at #{file}:#{line}:#{pos}"
+      elsif file and line
+        msg = "#{msg}  at #{file}:#{line}"
+      elsif line && pos
+        msg = "#{msg}  at line #{line}:#{pos}"
+      elsif line
+        msg = "#{msg}  at line #{line}"
+      elsif file
+        msg = "#{msg}  in #{file}"
+      end
+      msg = "#{msg} on node #{node}" unless node.nil?
+      if @backtrace.is_a?(Array)
+        msg += "\n"
+        msg += @backtrace.join("\n")
+      end
+    end
+    msg
   end
 
 end

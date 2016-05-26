@@ -2,13 +2,23 @@ require 'puppet/property/boolean'
 
 module Puppet
   # We want the mount to refresh when it changes.
-  newtype(:mount, :self_refresh => true) do
+  Type.newtype(:mount, :self_refresh => true) do
     @doc = "Manages mounted filesystems, including putting mount
       information into the mount table. The actual behavior depends
       on the value of the 'ensure' parameter.
 
-      Note that if a `mount` receives an event from another resource,
-      it will try to remount the filesystems if `ensure` is set to `mounted`."
+      **Refresh:** `mount` resources can respond to refresh events (via
+      `notify`, `subscribe`, or the `~>` arrow). If a `mount` receives an event
+      from another resource **and** its `ensure` attribute is set to `mounted`,
+      Puppet will try to unmount then remount that filesystem.
+
+      **Autorequires:** If Puppet is managing any parents of a mount resource ---
+      that is, other mount points higher up in the filesystem --- the child
+      mount will autorequire them. If Puppet is managing the file path of a
+      mount point, the mount resource will autorequire it.
+
+      **Autobefores:**  If Puppet is managing any child file paths of a mount
+      point, the mount resource will autobefore them."
 
     feature :refreshable, "The provider can remount the filesystem.",
       :methods => [:remount]
@@ -158,15 +168,18 @@ module Puppet
 
       validate do |value|
         raise Puppet::Error, "fstype must not contain whitespace: #{value}" if value =~ /\s/
+        raise Puppet::Error, "fstype must not be an empty string" if value.empty?
       end
     end
 
     newproperty(:options) do
-      desc "Mount options for the mounts, as they would
-        appear in the fstab."
+      desc "A single string containing options for the mount, as they would
+        appear in fstab. For many platforms this is a comma delimited string.
+        Consult the fstab(5) man page for system-specific details."
 
       validate do |value|
-        raise Puppet::Error, "option must not contain whitespace: #{value}" if value =~ /\s/
+        raise Puppet::Error, "options must not contain whitespace: #{value}" if value =~ /\s/
+        raise Puppet::Error, "options must not be an empty string" if value.empty?
       end
     end
 
@@ -200,15 +213,13 @@ module Puppet
 
     newproperty(:dump) do
       desc "Whether to dump the mount.  Not all platform support this.
-        Valid values are `1` or `0`. or `2` on FreeBSD, Default is `0`."
+        Valid values are `1` or `0` (or `2` on FreeBSD). Default is `0`."
 
       if Facter.value(:operatingsystem) == "FreeBSD"
         newvalue(%r{(0|1|2)})
       else
         newvalue(%r{(0|1)})
       end
-
-      newvalue(%r{(0|1)})
 
       defaultto {
         0 if @resource.managed?
@@ -249,8 +260,16 @@ module Puppet
       newvalues(:true, :false)
       defaultto do
         case Facter.value(:operatingsystem)
-        when "FreeBSD", "Darwin", "AIX", "DragonFly"
+        when "FreeBSD", "Darwin", "DragonFly", "OpenBSD"
           false
+        when "AIX"
+          if Facter.value(:kernelmajversion) == "5300"
+            false
+          elsif resource[:device] and resource[:device].match(%r{^[^/]+:/})
+            false
+          else
+            true
+          end
         else
           true
         end
@@ -278,5 +297,18 @@ module Puppet
       dependencies[0..-2]
     end
 
+    # Autorequire the mount point's file resource
+    autorequire(:file) { Pathname.new(self[:name]) }
+
+    # Autobefore the mount point's child file paths
+    autobefore(:file) do
+      dependencies = []
+      file_resources = catalog.resources.select { |resource| resource.type == :file }
+      children_file_resources = file_resources.select { |resource| File.expand_path(resource[:path]) =~ %r(#{self[:name]}/.) }
+      children_file_resources.each do |child|
+        dependencies.push Pathname.new(child[:path])
+      end
+      dependencies
+    end
   end
 end

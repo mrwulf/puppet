@@ -1,12 +1,9 @@
-require 'forwardable'
 require 'puppet/resource'
 
 # The primary difference between this class and its
 # parent is that this class has rules on who can set
 # parameters
 class Puppet::Parser::Resource < Puppet::Resource
-  extend Forwardable
-
   require 'puppet/parser/resource/param'
   require 'puppet/util/tagging'
   require 'puppet/parser/yaml_trimmer'
@@ -18,7 +15,6 @@ class Puppet::Parser::Resource < Puppet::Resource
   include Puppet::Util::MethodHelper
   include Puppet::Util::Errors
   include Puppet::Util::Logging
-  include Puppet::Util::Tagging
   include Puppet::Parser::YamlTrimmer
 
   attr_accessor :source, :scope, :collector_id
@@ -56,7 +52,9 @@ class Puppet::Parser::Resource < Puppet::Resource
     end
   end
 
-  def_delegator :scope, :environment
+  def environment
+    scope.environment
+  end
 
   # Process the  stage metaparameter for a class.   A containment edge
   # is drawn from  the class to the stage.   The stage for containment
@@ -75,16 +73,16 @@ class Puppet::Parser::Resource < Puppet::Resource
   # Retrieve the associated definition and evaluate it.
   def evaluate
     return if evaluated?
-    @evaluated = true
-    if klass = resource_type and ! builtin_type?
-      finish
-      evaluated_code = klass.evaluate_code(self)
-
-      return evaluated_code
-    elsif builtin?
-      devfail "Cannot evaluate a builtin type (#{type})"
-    else
-      self.fail "Cannot find definition #{type}"
+    Puppet::Util::Profiler.profile("Evaluated resource #{self}", [:compiler, :evaluate_resource, self]) do
+      @evaluated = true
+      if builtin?
+        devfail "Cannot evaluate a builtin type (#{type})"
+      elsif resource_type.nil?
+        self.fail "Cannot find definition #{type}"
+      else
+        finish(false) # Call finish but do not validate
+        resource_type.evaluate_code(self)
+      end
     end
   end
 
@@ -100,13 +98,18 @@ class Puppet::Parser::Resource < Puppet::Resource
   end
 
   # Do any finishing work on this object, called before evaluation or
-  # before storage/translation.
-  def finish
+  # before storage/translation. The method does nothing the second time
+  # it is called on the same resource.
+  #
+  # @param do_validate [Boolean] true if validation should be performed
+  #
+  # @api private
+  def finish(do_validate = true)
     return if finished?
     @finished = true
     add_defaults
     add_scope_tags
-    validate
+    validate if do_validate
   end
 
   # Has this resource already been finished?
@@ -114,9 +117,9 @@ class Puppet::Parser::Resource < Puppet::Resource
     @finished
   end
 
-  def initialize(*args)
-    raise ArgumentError, "Resources require a hash as last argument" unless args.last.is_a? Hash
-    raise ArgumentError, "Resources require a scope" unless args.last[:scope]
+  def initialize(type, title, attributes)
+    raise ArgumentError, 'Resources require a hash as last argument' unless attributes.is_a? Hash
+    raise ArgumentError, 'Resources require a scope' unless attributes[:scope]
     super
 
     @source ||= scope.source
@@ -129,6 +132,15 @@ class Puppet::Parser::Resource < Puppet::Resource
     else
       return true
     end
+  end
+
+  def is_unevaluated_consumer?
+    # We don't declare a new variable here just to test. Saves memory
+    instance_variable_defined?(:@unevaluated_consumer)
+  end
+
+  def mark_unevaluated_consumer
+    @unevaluated_consumer = true
   end
 
   # Merge an override resource in.  This will throw exceptions if
@@ -145,14 +157,6 @@ class Puppet::Parser::Resource < Puppet::Resource
     end
   end
 
-  # This only mattered for clients < 0.25, which we don't support any longer.
-  # ...but, since this hasn't been deprecated, and at least some functions
-  # used it, deprecate now rather than just eliminate. --daniel 2012-07-15
-  def metaparam_compatibility_mode?
-    Puppet.deprecation_warning "metaparam_compatibility_mode? is obsolete since < 0.25 clients are really, really not supported any more"
-    false
-  end
-
   def name
     self[:name] || self.title
   end
@@ -164,12 +168,10 @@ class Puppet::Parser::Resource < Puppet::Resource
   # if we ever receive a parameter named 'tag', set
   # the resource tags with its value.
   def set_parameter(param, value = nil)
-    if ! value.nil?
+    if ! param.is_a?(Puppet::Parser::Resource::Param)
       param = Puppet::Parser::Resource::Param.new(
         :name => param, :value => value, :source => self.source
       )
-    elsif ! param.is_a?(Puppet::Parser::Resource::Param)
-      raise ArgumentError, "Received incomplete information - no value provided for parameter #{param}"
     end
 
     tag(*param.value) if param.name == :tag
@@ -180,55 +182,110 @@ class Puppet::Parser::Resource < Puppet::Resource
   alias []= set_parameter
 
   def to_hash
-    @parameters.inject({}) do |hash, ary|
-      param = ary[1]
-      # Skip "undef" values.
-      hash[param.name] = param.value if param.value != :undef
-      hash
-    end
-  end
+    @parameters.reduce({}) do |result, (_, param)|
+      value = param.value
+      value = (value == :undef) ? nil : value
 
-
-  # Create a Puppet::Resource instance from this parser resource.
-  # We plan, at some point, on not needing to do this conversion, but
-  # it's sufficient for now.
-  def to_resource
-    result = Puppet::Resource.new(type, title)
-
-    to_hash.each do |p, v|
-      if v.is_a?(Puppet::Resource)
-        v = Puppet::Resource.new(v.type, v.title)
-      elsif v.is_a?(Array)
-        # flatten resource references arrays
-        v = v.flatten if v.flatten.find { |av| av.is_a?(Puppet::Resource) }
-        v = v.collect do |av|
-          av = Puppet::Resource.new(av.type, av.title) if av.is_a?(Puppet::Resource)
-          av
+      unless value.nil?
+        case param.name
+        when :before, :subscribe, :notify, :require
+          value = value.flatten if value.is_a?(Array)
+          result[param.name] = value
+        else
+          result[param.name] = value
         end
       end
-
-      # If the value is an array with only one value, then
-      # convert it to a single value.  This is largely so that
-      # the database interaction doesn't have to worry about
-      # whether it returns an array or a string.
-      result[p] = if v.is_a?(Array) and v.length == 1
-                    v[0]
-                  else
-                    v
-                  end
+      result
     end
-
-    result.file = self.file
-    result.line = self.line
-    result.exported = self.exported
-    result.virtual = self.virtual
-    result.tag(*self.tags)
-
-    result
   end
 
   # Convert this resource to a RAL resource.
-  def_delegator :to_resource, :to_ral
+  def to_ral
+    copy_as_resource.to_ral
+  end
+
+  # Answers if this resource is tagged with at least one of the tags given in downcased string form.
+  #
+  # The method is a faster variant of the tagged? method that does no conversion of its
+  # arguments.
+  #
+  # The match takes into account the tags that a resource will inherit from its container
+  # but have not been set yet.
+  # It does *not* take tags set via resource defaults as these will *never* be set on
+  # the resource itself since all resources always have tags that are automatically
+  # assigned.
+  #
+  # @param tag_array [Array[String]] list tags to look for
+  # @return [Boolean] true if this instance is tagged with at least one of the provided tags
+  #
+  def raw_tagged?(tag_array)
+    super || ((scope_resource = scope.resource) && !scope_resource.equal?(self) && scope_resource.raw_tagged?(tag_array))
+  end
+
+  # Fills resource params from a capability
+  #
+  # This backs 'consumes => Sql[one]'
+  # @api private
+  def add_parameters_from_consume
+    return if self[:consume].nil?
+
+    map = {}
+    [ self[:consume] ].flatten.map do |ref|
+      # Assert that the ref really is a resource reference
+      raise Puppet::Error, "Invalid consume in #{self.ref}: #{ref} is not a resource" unless ref.is_a?(Puppet::Resource)
+
+      # Resolve references
+      cap = catalog.resource(ref.type, ref.title)
+      if cap.nil?
+        raise "Resource #{ref} could not be found; it might not have been produced yet"
+      end
+
+      # Ensure that the found resource is a capability resource
+      raise Puppet::Error, "Invalid consume in #{ref}: #{cap} is not a capability resource" unless cap.resource_type.is_capability?
+      cap
+    end.each do |cns|
+      # Establish mappings
+      blueprint = resource_type.consumes.find do |bp|
+        bp[:capability] == cns.type
+      end
+      # @todo lutter 2015-08-03: catch this earlier, can we do this during
+      # static analysis ?
+      raise "Resource #{self} tries to consume #{cns} but no 'consumes' mapping exists for #{self.resource_type} and #{cns.type}" unless blueprint
+
+      # setup scope that has, for each attr of cns, a binding to cns[attr]
+      scope.with_global_scope do |global_scope|
+        cns_scope = global_scope.newscope(:source => self, :resource => self)
+        cns.to_hash.each { |name, value| cns_scope[name.to_s] = value }
+  
+        # evaluate mappings in that scope
+        resource_type.arguments.keys.each do |name|
+          if expr = blueprint[:mappings][name]
+            # Explicit mapping
+            value = expr.safeevaluate(cns_scope)
+          else
+            value = cns[name]
+          end
+          unless value.nil?
+            # @todo lutter 2015-07-01: this should be caught by the checker
+            # much earlier. We consume several capres, at least two of which
+            # want to map to the same parameter (PUP-5080)
+            raise "Attempt to reassign attribute '#{name}' in '#{self}' caused by multiple consumed mappings to the same attribute" if map[name]
+            map[name] = value
+          end
+        end
+      end
+    end
+
+    map.each { |name, value| self[name] = value if self[name].nil? }
+  end
+
+  def offset
+    nil
+  end
+
+  def pos
+    nil
+  end
 
   private
 
@@ -244,8 +301,9 @@ class Puppet::Parser::Resource < Puppet::Resource
   end
 
   def add_scope_tags
-    if scope_resource = scope.resource
-      tag(*scope_resource.tags)
+    scope_resource = scope.resource
+    unless scope_resource.nil? || scope_resource.equal?(self)
+      merge_tags(scope_resource)
     end
   end
 
@@ -266,7 +324,6 @@ class Puppet::Parser::Resource < Puppet::Resource
         msg += " at #{fields.join(":")}"
       end
       msg += "; cannot redefine"
-      Puppet.log_exception(ArgumentError.new(), msg)
       raise Puppet::ParseError.new(msg, param.line, param.file)
     end
 
@@ -288,11 +345,15 @@ class Puppet::Parser::Resource < Puppet::Resource
 
   # Make sure the resource's parameters are all valid for the type.
   def validate
-    @parameters.each do |name, param|
-      validate_parameter(name)
+    if builtin_type?
+      begin
+        @parameters.each { |name, value| validate_parameter(name) }
+      rescue => detail
+        self.fail Puppet::ParseError, detail.to_s + " on #{self}", detail
+      end
+    else
+      resource_type.validate_resource(self)
     end
-  rescue => detail
-    fail Puppet::ParseError, detail.to_s
   end
 
   def extract_parameters(params)

@@ -62,7 +62,7 @@ module Puppet::Util::SELinux
     if context.nil? or context == "unlabeled"
       return nil
     end
-    unless context =~ /^([a-z0-9_]+):([a-z0-9_]+):([a-zA-Z0-9_]+)(?::([a-zA-Z0-9:,._-]+))?/
+    unless context =~ /^([^\s:]+):([^\s:]+):([^\s:]+)(?::([\sa-zA-Z0-9:,._-]+))?$/
       raise Puppet::Error, "Invalid context to parse: #{context}"
     end
     ret = {
@@ -105,7 +105,7 @@ module Puppet::Util::SELinux
         when :selrange
           context[3] = value
         else
-          raise ArguementError, "set_selinux_context component must be one of :seluser, :selrole, :seltype, or :selrange"
+          raise ArgumentError, "set_selinux_context component must be one of :seluser, :selrole, :seltype, or :selrange"
       end
       context = context.join(':')
     else
@@ -148,7 +148,7 @@ module Puppet::Util::SELinux
   def selinux_label_support?(file)
     fstype = find_fs(file)
     return false if fstype.nil?
-    filesystems = ['ext2', 'ext3', 'ext4', 'gfs', 'gfs2', 'xfs', 'jfs']
+    filesystems = ['ext2', 'ext3', 'ext4', 'gfs', 'gfs2', 'xfs', 'jfs', 'btrfs']
     filesystems.include?(fstype)
   end
 
@@ -216,7 +216,7 @@ module Puppet::Util::SELinux
   #
   # @return [File::Stat] File.lstat result
   def file_lstat(path)
-    File.lstat(path)
+    Puppet::FileSystem.lstat(path)
   end
   private :file_lstat
 end

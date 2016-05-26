@@ -47,7 +47,7 @@ class Puppet::Util::FileType
         rescue => detail
           message = "#{self.class} could not read #{@path}: #{detail}"
           Puppet.log_exception(detail, message)
-          raise Puppet::Error, message
+          raise Puppet::Error, message, detail.backtrace
         end
       end
 
@@ -63,7 +63,7 @@ class Puppet::Util::FileType
         rescue => detail
           message = "#{self.class} could not write #{@path}: #{detail}"
           Puppet.log_exception(detail, message)
-          raise Puppet::Error, message
+          raise Puppet::Error, message, detail.backtrace
         end
       end
     end
@@ -78,9 +78,10 @@ class Puppet::Util::FileType
     @bucket ||= Puppet::Type.type(:filebucket).mkdefaultbucket.bucket
   end
 
-  def initialize(path)
+  def initialize(path, default_mode = nil)
     raise ArgumentError.new("Path is nil") if path.nil?
     @path = path
+    @default_mode = default_mode
   end
 
   # Arguments that will be passed to the execute method. Will set the uid
@@ -98,12 +99,12 @@ class Puppet::Util::FileType
   newfiletype(:flat) do
     # Back the file up before replacing it.
     def backup
-      bucket.backup(@path) if File.exists?(@path)
+      bucket.backup(@path) if Puppet::FileSystem.exist?(@path)
     end
 
     # Read the file.
     def read
-      if File.exist?(@path)
+      if Puppet::FileSystem.exist?(@path)
         File.read(@path)
       else
         return nil
@@ -112,13 +113,14 @@ class Puppet::Util::FileType
 
     # Remove the file.
     def remove
-      File.unlink(@path) if File.exist?(@path)
+      Puppet::FileSystem.unlink(@path) if Puppet::FileSystem.exist?(@path)
     end
 
     # Overwrite the file.
     def write(text)
       tf = Tempfile.new("puppet")
       tf.print text; tf.flush
+      File.chmod(@default_mode, tf.path) if @default_mode
       FileUtils.cp(tf.path, @path)
       tf.close
       # If SELinux is present, we need to ensure the file has its expected context
@@ -134,7 +136,9 @@ class Puppet::Util::FileType
       @@tabs.clear
     end
 
-    def initialize(path)
+    def initialize(path, default_mode = nil)
+      # default_mode is meaningless for this filetype,
+      # supported only for compatibility with :flat
       super
       @@tabs[@path] ||= ""
     end

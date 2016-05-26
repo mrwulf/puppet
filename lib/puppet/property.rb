@@ -33,9 +33,6 @@ require 'puppet/parameter'
 #   handling of measurements such as kb, mb, gb. If a type requires two different size measurements it requires
 #   one concrete class per such measure; e.g. MinSize (:parent => Size), and MaxSize (:parent => Size).
 #
-# @todo Describe meta-parameter shadowing. This concept can not be understood by just looking at the descriptions
-#   of the methods involved.
-#
 # @see Puppet::Type
 # @see Puppet::Parameter
 #
@@ -137,11 +134,6 @@ class Puppet::Property < Puppet::Parameter
   # @option options [Symbol] :event The event that should be emitted when this value is set.
   # @todo Option :event original comment says "event should be returned...", is "returned" the correct word
   #   to use?
-  # @option options [Symbol] :call When to call any associated block. The default value is `:instead` which
-  #   means that the block should be called instead of the provider. In earlier versions (before 20081031) it
-  #   was possible to specify a value of `:before` or `:after` for the purpose of calling
-  #   both the block and the provider. Use of these deprecated options will now raise an exception later
-  #   in the process when the _is_ value is set (see #set).
   # @option options [Symbol] :invalidate_refreshes Indicates a change on this property should invalidate and
   #   remove any scheduled refreshes (from notify or subscribe) targeted at the same resource. For example, if
   #   a change in this property takes into account any changes that a scheduled refresh would have performed,
@@ -149,18 +141,24 @@ class Puppet::Property < Puppet::Parameter
   # @option options [Object] any Any other option is treated as a call to a setter having the given
   #   option name (e.g. `:required_features` calls `required_features=` with the option's value as an
   #   argument).
-  # @todo The original documentation states that the option `:method` will set the name of the generated
-  #   setter method, but this is not implemented. Is the documentatin or the implementation in error?
-  #   (The implementation is in Puppet::Parameter::ValueCollection#new_value).
-  # @todo verify that the use of :before and :after have been deprecated (or rather - never worked, and
-  #   was never in use. (This means, that the option :call could be removed since calls are always :instead).
   #
   # @dsl type
   # @api public
   def self.newvalue(name, options = {}, &block)
     value = value_collection.newvalue(name, options, &block)
 
-    define_method(value.method, &value.block) if value.method and value.block
+    unless value.method.nil?
+      method = value.method.to_sym
+      if value.block
+        if instance_methods(false).include?(method)
+          raise ArgumentError, "Attempt to redefine method #{method} with block"
+        end
+        define_method(method, &value.block)
+      else
+        # Let the method be an alias for calling the providers setter unless we already have this method
+        alias_method(method, :call_provider) unless method_defined?(method)
+      end
+    end
     value
   end
 
@@ -171,45 +169,13 @@ class Puppet::Property < Puppet::Parameter
   # @api private
   #
   def call_provider(value)
-      method = self.class.name.to_s + "="
-      unless provider.respond_to? method
-        self.fail "The #{provider.class.name} provider can not handle attribute #{self.class.name}"
-      end
-      provider.send(method, value)
-  end
-
-  # Sets the value of this property to the given value by calling the dynamically created setter method associated with the "valid value" referenced by the given name.
-  # @param name [Symbol, Regexp] a valid value "name" as returned by {value_name}
-  # @param value [Object] the value to set as the value of the property
-  # @raise [Puppet::DevError] if there was no method to call
-  # @raise [Puppet::Error] if there were problems setting the value
-  # @raise [Puppet::ResourceError] if there was a problem setting the value and it was not raised
-  #   as a Puppet::Error. The original exception is wrapped and logged.
-  # @todo The check for a valid value option called `:method` does not seem to be fully supported
-  #   as it seems that this option is never consulted when the method is dynamically created. Needs to
-  #   be investigated. (Bug, or documentation needs to be changed).
-  # @see #set
-  # @api private
-  #
-  def call_valuemethod(name, value)
-    if method = self.class.value_option(name, :method) and self.respond_to?(method)
-      begin
-        self.send(method)
-      rescue Puppet::Error
-        raise
-      rescue => detail
-        error = Puppet::ResourceError.new("Could not set '#{value}' on #{self.class.name}: #{detail}", @resource.line, @resource.file, detail)
-        error.set_backtrace detail.backtrace
-        Puppet.log_exception(detail, error.message)
-        raise error
-      end
-    elsif block = self.class.value_option(name, :block)
-      # FIXME It'd be better here to define a method, so that
-      # the blocks could return values.
-      self.instance_eval(&block)
-    else
-      devfail "Could not find method for value '#{name}'"
+    # We have no idea how to handle this unless our parent have a provider
+    self.fail "#{self.class.name} cannot handle values of type #{value.inspect}" unless @resource.provider
+    method = self.class.name.to_s + "="
+    unless provider.respond_to? method
+      self.fail "The #{provider.class.name} provider can not handle attribute #{self.class.name}"
     end
+    provider.send(method, value)
   end
 
   # Formats a message for a property change from the given `current_value` to the given `newvalue`.
@@ -231,7 +197,7 @@ class Puppet::Property < Puppet::Parameter
     rescue => detail
       message = "Could not convert change '#{name}' to string: #{detail}"
       Puppet.log_exception(detail, message)
-      raise Puppet::DevError, message
+      raise Puppet::DevError, message, detail.backtrace
     end
   end
 
@@ -275,27 +241,6 @@ class Puppet::Property < Puppet::Parameter
       attrs[:invalidate_refreshes] = true if value.invalidate_refreshes
     end
     resource.event attrs
-  end
-
-  # @todo What is this?
-  # What is this used for?
-  attr_reader :shadow
-
-  # Initializes a Property the same way as a Parameter and handles the special case when a property is shadowing a meta-parameter.
-  # @todo There is some special initialization when a property is not a metaparameter but
-  #   Puppet::Type.metaparamclass(for this class's name) is not nil - if that is the case a
-  #   setup_shadow is performed for that class.
-  #
-  # @param hash [Hash] options passed to the super initializer {Puppet::Parameter#initialize}
-  # @note New properties of a type should be created via the DSL method {Puppet::Type.newproperty}.
-  # @see Puppet::Parameter#initialize description of Parameter initialize options.
-  # @api private
-  def initialize(hash = {})
-    super
-
-    if ! self.metaparam? and klass = Puppet::Type.metaparamclass(self.class.name)
-      setup_shadow(klass)
-    end
   end
 
   # Determines whether the property is in-sync or not in a way that is protected against missing value.
@@ -423,16 +368,6 @@ class Puppet::Property < Puppet::Parameter
     self.class.array_matching == :all
   end
 
-  # (see Puppet::Parameter#munge)
-  # If this property is a meta-parameter shadow, the shadow's munge is also called.
-  # @todo Incomprehensible ! The concept of "meta-parameter-shadowing" needs to be explained.
-  #
-  def munge(value)
-    self.shadow.munge(value) if self.shadow
-
-    super
-  end
-
   # @return [Symbol] the name of the property as stated when the property was created.
   # @note A property class (just like a parameter class) describes one specific property and
   #   can only be used once within one type's inheritance chain.
@@ -472,54 +407,39 @@ class Puppet::Property < Puppet::Parameter
   end
 
   # Sets the current _(is)_ value of this property.
-  # The value is set using the provider's setter method for this property ({#call_provider}) if nothing
-  # else has been specified. If the _valid value_ for the given value defines a `:call` option with the
-  # value `:instead`, the
-  # value is set with {#call_valuemethod} which invokes a block specified for the valid value.
+  # The _name_ associated with the value is first obtained by calling {value_name}. A dynamically created setter
+  # method associated with this _name_ is called if it exists, otherwise the value is set using using the provider's
+  # setter method for this property by calling ({#call_provider}).
   #
-  # @note In older versions (before 20081031) it was possible to specify the call types `:before` and `:after`
-  #   which had the effect that both the provider method and the _valid value_ block were called.
-  #   This is no longer supported.
-  #
-  # @param value [Object] the value to set as the value of this property
-  # @return [Object] returns what {#call_valuemethod} or {#call_provider} returns
-  # @raise [Puppet::Error] when the provider setter should be used but there is no provider set in the _associated
-  #  resource_
-  # @raise [Puppet::DevError] when a deprecated call form was specified (e.g. `:before` or `:after`).
+  # @param value [Object] the value to set
+  # @return [Object] returns the result of calling the setter method or {#call_provider}
+  # @raise [Puppet::Error] if there were problems setting the value using the setter method or when the provider
+  #  setter should be used but there is no provider in the associated resource_
+  # @raise [Puppet::ResourceError] if there was a problem setting the value and it was not raised
+  #   as a Puppet::Error. The original exception is wrapped and logged.
   # @api public
   #
   def set(value)
     # Set a name for looking up associated options like the event.
     name = self.class.value_name(value)
-
-    call = self.class.value_option(name, :call) || :none
-
-    if call == :instead
-      call_valuemethod(name, value)
-    elsif call == :none
-      # They haven't provided a block, and our parent does not have
-      # a provider, so we have no idea how to handle this.
-      self.fail "#{self.class.name} cannot handle values of type #{value.inspect}" unless @resource.provider
-      call_provider(value)
+    if method = self.class.value_option(name, :method) and self.respond_to?(method)
+      begin
+        self.send(method)
+      rescue Puppet::Error
+        raise
+      rescue => detail
+        error = Puppet::ResourceError.new("Could not set '#{value}' on #{self.class.name}: #{detail}", @resource.line, @resource.file, detail)
+        error.set_backtrace detail.backtrace
+        Puppet.log_exception(detail, error.message)
+        raise error
+      end
+    elsif block = self.class.value_option(name, :block)
+      # FIXME It'd be better here to define a method, so that
+      # the blocks could return values.
+      self.instance_eval(&block)
     else
-      # LAK:NOTE 20081031 This is a change in behaviour -- you could
-      # previously specify :call => [;before|:after], which would call
-      # the setter *in addition to* the block.  I'm convinced this
-      # was never used, and it makes things unecessarily complicated.
-      # If you want to specify a block and still call the setter, then
-      # do so in the block.
-      devfail "Cannot use obsolete :call value '#{call}' for property '#{self.class.name}'"
+      call_provider(value)
     end
-  end
-
-  # Sets up a shadow property for a shadowing meta-parameter.
-  # This construct allows the creation of a property with the
-  # same name as a meta-parameter. The metaparam will only be stored as a shadow.
-  # @param klass [Class<inherits Puppet::Parameter>] the class of the shadowed meta-parameter
-  # @return [Puppet::Parameter] an instance of the given class (a parameter or property)
-  #
-  def setup_shadow(klass)
-    @shadow = klass.new(:resource => self.resource)
   end
 
   # Returns the wanted _(should)_ value of this property.
@@ -601,7 +521,7 @@ class Puppet::Property < Puppet::Parameter
     if features = self.class.value_option(self.class.value_name(value), :required_features)
       features = Array(features)
       needed_features = features.collect { |f| f.to_s }.join(", ")
-      raise ArgumentError, "Provider must have features '#{needed_features}' to set '#{self.class.name}' to '#{value}'" unless provider.satisfies?(features)
+      raise ArgumentError, "Provider #{provider.class.name} must have features '#{needed_features}' to set '#{self.class.name}' to '#{value}'" unless provider.satisfies?(features)
     end
   end
 

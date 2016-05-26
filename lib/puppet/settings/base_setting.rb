@@ -2,32 +2,17 @@ require 'puppet/settings/errors'
 
 # The base setting type
 class Puppet::Settings::BaseSetting
-  attr_accessor :name, :desc, :section, :default, :call_on_define, :call_hook
-  attr_reader :short
+  attr_accessor :name, :desc, :section, :default, :call_hook
+  attr_reader :short, :deprecated
 
   def self.available_call_hook_values
     [:on_define_and_write, :on_initialize_and_write, :on_write_only]
   end
 
-  def call_on_define
-    Puppet.deprecation_warning "call_on_define has been deprecated.  Please use call_hook_on_define?"
-    call_hook_on_define?
-  end
-
-  def call_on_define=(value)
-    if value
-      Puppet.deprecation_warning ":call_on_define has been changed to :call_hook => :on_define_and_write. Please change #{name}."
-      @call_hook = :on_define_and_write
-    else
-      Puppet.deprecation_warning ":call_on_define => :false has been changed to :call_hook => :on_write_only. Please change #{name}."
-      @call_hook = :on_write_only
-    end
-  end
-
   def call_hook=(value)
     if value.nil?
       Puppet.warning "Setting :#{name} :call_hook is nil, defaulting to :on_write_only"
-      value ||= :on_write_only
+      value = :on_write_only
     end
     raise ArgumentError, "Invalid option #{value} for call_hook" unless self.class.available_call_hook_values.include? value
     @call_hook = value
@@ -39,19 +24,6 @@ class Puppet::Settings::BaseSetting
 
   def call_hook_on_initialize?
     call_hook == :on_initialize_and_write
-  end
-
-  #added as a proper method, only to generate a deprecation warning
-  #and return value from
-  def setbycli
-    Puppet.deprecation_warning "Puppet.settings.setting(#{name}).setbycli is deprecated. Use Puppet.settings.set_by_cli?(#{name}) instead."
-    @settings.set_by_cli?(name)
-  end
-
-  def setbycli=(value)
-    Puppet.deprecation_warning "Puppet.settings.setting(#{name}).setbycli= is deprecated. You should not manually set that values were specified on the command line."
-    @settings.set_value(name, @settings[name], :cli) if value
-    raise ArgumentError, "Cannot unset setbycli" unless value
   end
 
   # get the arguments in getopt format
@@ -72,12 +44,13 @@ class Puppet::Settings::BaseSetting
     end
   end
 
-  def has_hook?
-    respond_to? :handle
+  def hook=(block)
+    @has_hook = true
+    meta_def :handle, &block
   end
 
-  def hook=(block)
-    meta_def :handle, &block
+  def has_hook?
+    @has_hook
   end
 
   # Create the new element.  Pretty much just sets the name.
@@ -92,6 +65,7 @@ class Puppet::Settings::BaseSetting
 
     #set the default value for call_hook
     @call_hook = :on_write_only if args[:hook] and not args[:call_hook]
+    @has_hook = false
 
     raise ArgumentError, "Cannot reference :call_hook for :#{@name} if no :hook is defined" if args[:call_hook] and not args[:hook]
 
@@ -120,8 +94,17 @@ class Puppet::Settings::BaseSetting
   end
 
   def default(check_application_defaults_first = false)
-    return @default unless check_application_defaults_first
-    return @settings.value(name, :application_defaults, true) || @default
+    if @default.is_a? Proc
+      # Give unit tests a chance to reevaluate the call by removing the instance variable
+      unless instance_variable_defined?(:@evaluated_default)
+        @evaluated_default = @default.call
+      end
+      default_value = @evaluated_default
+    else
+      default_value = @default
+    end
+    return default_value unless check_application_defaults_first
+    return @settings.value(name, :application_defaults, true) || default_value
   end
 
   # Convert the object to a config statement.
@@ -150,13 +133,45 @@ class Puppet::Settings::BaseSetting
     str.gsub(/^/, "    ")
   end
 
-  # Retrieves the value, or if it's not set, retrieves the default.
-  def value
-    @settings.value(self.name)
+  # @param bypass_interpolation [Boolean] Set this true to skip the
+  #   interpolation step, returning the raw setting value.  Defaults to false.
+  # @return [String] Retrieves the value, or if it's not set, retrieves the default.
+  # @api public
+  def value(bypass_interpolation = false)
+    @settings.value(self.name, nil, bypass_interpolation)
   end
 
   # Modify the value when it is first evaluated
   def munge(value)
     value
+  end
+
+  def set_meta(meta)
+    Puppet.notice("#{name} does not support meta data. Ignoring.")
+  end
+
+  def deprecated=(deprecation)
+    raise(ArgumentError, "'#{deprecation}' is an unknown setting deprecation state.  Must be either :completely or :allowed_on_commandline") unless [:completely, :allowed_on_commandline].include?(deprecation)
+    @deprecated = deprecation
+  end
+
+  def deprecated?
+    !!@deprecated
+  end
+
+  # True if we should raise a deprecation_warning if the setting is submitted
+  # on the commandline or is set in puppet.conf.
+  def completely_deprecated?
+    @deprecated == :completely
+  end
+
+  # True if we should raise a deprecation_warning if the setting is found in
+  # puppet.conf, but not if the user sets it on the commandline
+  def allowed_on_commandline?
+    @deprecated == :allowed_on_commandline
+  end
+
+  def inspect
+    %Q{<#{self.class}:#{self.object_id} @name="#{@name}" @section="#{@section}" @default="#{@default}" @call_hook="#{@call_hook}">}
   end
 end

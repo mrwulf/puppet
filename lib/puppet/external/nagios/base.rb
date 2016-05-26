@@ -283,8 +283,8 @@ class Nagios::Base
     oc.sub!(/Nagios/,'nagios')
     oc.sub!(/::/,'')
     ocs.push oc
-    ocs.each { |oc|
-      str += "objectclass: #{oc}\n"
+    ocs.each { |objclass|
+      str += "objectclass: #{objclass}\n"
     }
     @parameters.each { |name,value|
       next if self.class.suppress.include?(name)
@@ -303,7 +303,7 @@ class Nagios::Base
         if value.is_a? Array
           value.join(",").sub(';', '\;')
         else
-          value.sub(';', '\;')
+          value.to_s.sub(';', '\;')
         end
         ]
     }

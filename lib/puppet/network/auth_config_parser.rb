@@ -4,7 +4,7 @@ module Puppet::Network
 class AuthConfigParser
 
   def self.new_from_file(file)
-    self.new(File.read(file))
+    self.new(Puppet::FileSystem.read(file, :encoding => 'utf-8'))
   end
 
   def initialize(string)
@@ -40,8 +40,8 @@ class AuthConfigParser
     # Verify each of the rights are valid.
     # We let the check raise an error, so that it can raise an error
     # pointing to the specific problem.
-    rights.each { |name, right|
-      right.valid?
+    rights.each { |name, r|
+      r.valid?
     }
     rights
   end
@@ -76,7 +76,7 @@ class AuthConfigParser
         right.info msg % val
         right.send(method, val)
       rescue Puppet::AuthStoreError => detail
-        raise Puppet::ConfigurationError, "#{detail} at line #{count} of #{@file}"
+        raise Puppet::ConfigurationError, "#{detail} at line #{count} of #{@file}", detail.backtrace
       end
     end
   end

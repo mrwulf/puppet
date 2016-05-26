@@ -90,7 +90,7 @@ class Puppet::Provider::AixObject < Puppet::Provider
       true
     elsif mapping[key][:method].nil?
       objectinfo[mapping[key][:key]] = value
-    elsif
+    else
       objectinfo[mapping[key][:key]] = method(mapping[key][:method]).call(value)
     end
 
@@ -117,7 +117,7 @@ class Puppet::Provider::AixObject < Puppet::Provider
     elsif mapping[key][:method].nil?
       new_key = mapping[key][:key]
       new_value = value
-    elsif
+    else
       new_key = mapping[key][:key]
       new_value = method(mapping[key][:method]).call(value)
     end
@@ -196,7 +196,7 @@ class Puppet::Provider::AixObject < Puppet::Provider
     end
 
     attrs.each { |val|
-      key = key_list.shift.downcase.to_sym
+      key = key_list.shift.to_sym
       properties = self.load_attribute(key, val, mapping, properties)
     }
     properties.empty? ? nil : properties
@@ -317,7 +317,7 @@ class Puppet::Provider::AixObject < Puppet::Provider
     begin
       execute(self.addcmd)
     rescue Puppet::ExecutionFailure => detail
-      raise Puppet::Error, "Could not create #{@resource.class.name} #{@resource.name}: #{detail}"
+      raise Puppet::Error, "Could not create #{@resource.class.name} #{@resource.name}: #{detail}", detail.backtrace
     end
   end
 
@@ -332,7 +332,7 @@ class Puppet::Provider::AixObject < Puppet::Provider
     begin
       execute(self.deletecmd)
     rescue Puppet::ExecutionFailure => detail
-      raise Puppet::Error, "Could not delete #{@resource.class.name} #{@resource.name}: #{detail}"
+      raise Puppet::Error, "Could not delete #{@resource.class.name} #{@resource.name}: #{detail}", detail.backtrace
     end
   end
 
@@ -376,7 +376,7 @@ class Puppet::Provider::AixObject < Puppet::Provider
       begin
         execute(cmd)
       rescue Puppet::ExecutionFailure  => detail
-        raise Puppet::Error, "Could not set #{param} on #{@resource.class.name}[#{@resource.name}]: #{detail}"
+        raise Puppet::Error, "Could not set #{param} on #{@resource.class.name}[#{@resource.name}]: #{detail}", detail.backtrace
       end
     end
 

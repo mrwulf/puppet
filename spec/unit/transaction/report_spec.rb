@@ -3,73 +3,81 @@ require 'spec_helper'
 
 require 'puppet'
 require 'puppet/transaction/report'
-
-# the json-schema gem doesn't support windows
-if not Puppet.features.microsoft_windows?
-  REPORT_SCHEMA_URI = File.join(File.dirname(__FILE__),    '../../../api/schemas/report.json')
-  REPORT_SCHEMA = JSON.parse(File.read(REPORT_SCHEMA_URI))
-
-  describe "report schema" do
-    it "should validate against the json meta-schema" do
-      JSON::Validator.validate!(JSON_META_SCHEMA, REPORT_SCHEMA)
-    end
-  end
-
-end
+require 'matchers/json'
 
 describe Puppet::Transaction::Report do
+  include JSONMatchers
   include PuppetSpec::Files
+
   before do
     Puppet::Util::Storage.stubs(:store)
   end
 
   it "should set its host name to the node_name_value" do
     Puppet[:node_name_value] = 'mynode'
-    Puppet::Transaction::Report.new("apply").host.should == "mynode"
+    expect(Puppet::Transaction::Report.new("apply").host).to eq("mynode")
   end
 
   it "should return its host name as its name" do
     r = Puppet::Transaction::Report.new("apply")
-    r.name.should == r.host
+    expect(r.name).to eq(r.host)
   end
 
   it "should create an initialization timestamp" do
     Time.expects(:now).returns "mytime"
-    Puppet::Transaction::Report.new("apply").time.should == "mytime"
+    expect(Puppet::Transaction::Report.new("apply").time).to eq("mytime")
   end
 
   it "should take a 'kind' as an argument" do
-    Puppet::Transaction::Report.new("inspect").kind.should == "inspect"
+    expect(Puppet::Transaction::Report.new("inspect").kind).to eq("inspect")
   end
 
   it "should take a 'configuration_version' as an argument" do
-    Puppet::Transaction::Report.new("inspect", "some configuration version", "some environment").configuration_version.should == "some configuration version"
+    expect(Puppet::Transaction::Report.new("inspect", "some configuration version", "some environment").configuration_version).to eq("some configuration version")
   end
 
   it "should take a 'transaction_uuid' as an argument" do
-    Puppet::Transaction::Report.new("inspect", "some configuration version", "some environment", "some transaction uuid").transaction_uuid.should == "some transaction uuid"
+    expect(Puppet::Transaction::Report.new("inspect", "some configuration version", "some environment", "some transaction uuid").transaction_uuid).to eq("some transaction uuid")
   end
 
   it "should be able to set configuration_version" do
     report = Puppet::Transaction::Report.new("inspect")
     report.configuration_version = "some version"
-    report.configuration_version.should == "some version"
+    expect(report.configuration_version).to eq("some version")
   end
 
   it "should be able to set transaction_uuid" do
     report = Puppet::Transaction::Report.new("inspect")
     report.transaction_uuid = "some transaction uuid"
-    report.transaction_uuid.should == "some transaction uuid"
+    expect(report.transaction_uuid).to eq("some transaction uuid")
+  end
+
+  it "should be able to set code_id" do
+    report = Puppet::Transaction::Report.new("inspect")
+    report.code_id = "some code id"
+    expect(report.code_id).to eq("some code id")
+  end
+
+  it "should be able to set catalog_uuid" do
+    report = Puppet::Transaction::Report.new("inspect")
+    report.catalog_uuid = "some catalog uuid"
+    expect(report.catalog_uuid).to eq("some catalog uuid")
+  end
+
+  it "should be able to set cached_catalog_status" do
+    report = Puppet::Transaction::Report.new("inspect")
+    report.cached_catalog_status = "explicitly_requested"
+    expect(report.cached_catalog_status).to eq("explicitly_requested")
   end
 
   it "should take 'environment' as an argument" do
-    Puppet::Transaction::Report.new("inspect", "some configuration version", "some environment").environment.should == "some environment"
+    expect(Puppet::Transaction::Report.new("inspect", "some configuration version", "some environment").environment).to eq("some environment")
   end
 
   it "should be able to set environment" do
     report = Puppet::Transaction::Report.new("inspect")
     report.environment = "some environment"
-    report.environment.should == "some environment"
+    expect(report.environment).to eq("some environment")
   end
 
   it "should not include whits" do
@@ -86,8 +94,8 @@ describe Puppet::Transaction::Report do
     catalog.apply(:report => report)
     report.finalize_report
 
-    report.resource_statuses.values.any? {|res| res.resource_type =~ /whit/i}.should be_false
-    report.metrics['time'].values.any? {|metric| metric.first =~ /whit/i}.should be_false
+    expect(report.resource_statuses.values.any? {|res| res.resource_type =~ /whit/i}).to be_falsey
+    expect(report.metrics['time'].values.any? {|metric| metric.first =~ /whit/i}).to be_falsey
   end
 
   describe "when accepting logs" do
@@ -97,12 +105,12 @@ describe Puppet::Transaction::Report do
 
     it "should add new logs to the log list" do
       @report << "log"
-      @report.logs[-1].should == "log"
+      expect(@report.logs[-1]).to eq("log")
     end
 
     it "should return self" do
       r = @report << "log"
-      r.should equal(@report)
+      expect(r).to equal(@report)
     end
   end
 
@@ -126,7 +134,7 @@ describe Puppet::Transaction::Report do
     it "should add each status to its status list" do
       status = stub 'status', :resource => "foo"
       @report.add_resource_status status
-      @report.resource_statuses["foo"].should equal(status)
+      expect(@report.resource_statuses["foo"]).to equal(status)
     end
   end
 
@@ -141,13 +149,13 @@ describe Puppet::Transaction::Report do
     end
 
     it "should default to the 'processor' terminus" do
-      Puppet::Transaction::Report.indirection.terminus_class.should == :processor
+      expect(Puppet::Transaction::Report.indirection.terminus_class).to eq(:processor)
     end
 
     it "should delegate its name attribute to its host method" do
       report = Puppet::Transaction::Report.new("apply")
       report.expects(:host).returns "me"
-      report.name.should == "me"
+      expect(report.name).to eq("me")
     end
   end
 
@@ -156,14 +164,14 @@ describe Puppet::Transaction::Report do
       report = Puppet::Transaction::Report.new("apply")
       report.add_metric("changes", {"total" => 1})
       report.add_metric("resources", {"failed" => 0})
-      report.exit_status.should == 2
+      expect(report.exit_status).to eq(2)
     end
 
     it "should produce 4 if failures are present" do
       report = Puppet::Transaction::Report.new("apply")
       report.add_metric("changes", {"total" => 0})
       report.add_metric("resources", {"failed" => 1})
-      report.exit_status.should == 4
+      expect(report.exit_status).to eq(4)
     end
 
     it "should produce 4 if failures to restart are present" do
@@ -171,21 +179,21 @@ describe Puppet::Transaction::Report do
       report.add_metric("changes", {"total" => 0})
       report.add_metric("resources", {"failed" => 0})
       report.add_metric("resources", {"failed_to_restart" => 1})
-      report.exit_status.should == 4
+      expect(report.exit_status).to eq(4)
     end
 
     it "should produce 6 if both changes and failures are present" do
       report = Puppet::Transaction::Report.new("apply")
       report.add_metric("changes", {"total" => 1})
       report.add_metric("resources", {"failed" => 1})
-      report.exit_status.should == 6
+      expect(report.exit_status).to eq(6)
     end
   end
 
   describe "before finalizing the report" do
     it "should have a status of 'failed'" do
       report = Puppet::Transaction::Report.new("apply")
-      report.status.should == 'failed'
+      expect(report.status).to eq('failed')
     end
   end
 
@@ -214,7 +222,7 @@ describe Puppet::Transaction::Report do
     [:time, :resources, :changes, :events].each do |type|
       it "should add #{type} metrics" do
         @report.finalize_report
-        @report.metrics[type.to_s].should be_instance_of(Puppet::Transaction::Metric)
+        expect(@report.metrics[type.to_s]).to be_instance_of(Puppet::Transaction::Metric)
       end
     end
 
@@ -223,7 +231,7 @@ describe Puppet::Transaction::Report do
         add_statuses(3)
 
         @report.finalize_report
-        metric(:resources, "total").should == 3
+        expect(metric(:resources, "total")).to eq(3)
       end
 
       Puppet::Resource::Status::STATES.each do |state|
@@ -231,19 +239,19 @@ describe Puppet::Transaction::Report do
           add_statuses(3) { |status| status.send(state.to_s + "=", true) }
 
           @report.finalize_report
-          metric(:resources, state.to_s).should == 3
+          expect(metric(:resources, state.to_s)).to eq(3)
         end
 
         it "should provide 0 for states not in status" do
           @report.finalize_report
-          metric(:resources, state.to_s).should == 0
+          expect(metric(:resources, state.to_s)).to eq(0)
         end
       end
 
       it "should mark the report as 'failed' if there are failing resources" do
         add_statuses(1) { |status| status.failed = true }
         @report.finalize_report
-        @report.status.should == 'failed'
+        expect(@report.status).to eq('failed')
       end
     end
 
@@ -251,14 +259,14 @@ describe Puppet::Transaction::Report do
       it "should provide the number of changes from the resource statuses and mark the report as 'changed'" do
         add_statuses(3) { |status| 3.times { status << Puppet::Transaction::Event.new(:status => 'success') } }
         @report.finalize_report
-        metric(:changes, "total").should == 9
-        @report.status.should == 'changed'
+        expect(metric(:changes, "total")).to eq(9)
+        expect(@report.status).to eq('changed')
       end
 
       it "should provide a total even if there are no changes, and mark the report as 'unchanged'" do
         @report.finalize_report
-        metric(:changes, "total").should == 0
-        @report.status.should == 'unchanged'
+        expect(metric(:changes, "total")).to eq(0)
+        expect(@report.status).to eq('unchanged')
       end
     end
 
@@ -276,15 +284,15 @@ describe Puppet::Transaction::Report do
 
         @report.finalize_report
 
-        metric(:time, "file").should == 3
-        metric(:time, "exec").should == 6
-        metric(:time, "tidy").should == 9
+        expect(metric(:time, "file")).to eq(3)
+        expect(metric(:time, "exec")).to eq(6)
+        expect(metric(:time, "tidy")).to eq(9)
       end
 
       it "should add any provided times from external sources" do
         @report.add_times :foobar, 50
         @report.finalize_report
-        metric(:time, "foobar").should == 50
+        expect(metric(:time, "foobar")).to eq(50)
       end
 
       it "should have a total time" do
@@ -293,7 +301,7 @@ describe Puppet::Transaction::Report do
         end
         @report.add_times :config_retrieval, 0.5
         @report.finalize_report
-        metric(:time, "total").should == 4.25
+        expect(metric(:time, "total")).to eq(4.25)
       end
     end
 
@@ -303,12 +311,12 @@ describe Puppet::Transaction::Report do
           3.times { |i| status.add_event(Puppet::Transaction::Event.new :status => 'success') }
         end
         @report.finalize_report
-        metric(:events, "total").should == 9
+        expect(metric(:events, "total")).to eq(9)
       end
 
       it "should provide the total even if there are no events" do
         @report.finalize_report
-        metric(:events, "total").should == 0
+        expect(metric(:events, "total")).to eq(0)
       end
 
       Puppet::Transaction::Event::EVENT_STATUSES.each do |status_name|
@@ -322,7 +330,7 @@ describe Puppet::Transaction::Report do
           end
 
           @report.finalize_report
-          metric(:events, status_name).should == 9
+          expect(metric(:events, status_name)).to eq(9)
         end
       end
     end
@@ -342,40 +350,40 @@ describe Puppet::Transaction::Report do
 
     %w{changes time resources events version}.each do |main|
       it "should include the key #{main} in the raw summary hash" do
-        @report.raw_summary.should be_key main
+        expect(@report.raw_summary).to be_key main
       end
     end
 
     it "should include the last run time in the raw summary hash" do
       Time.stubs(:now).returns(Time.utc(2010,11,10,12,0,24))
-      @report.raw_summary["time"]["last_run"].should == 1289390424
+      expect(@report.raw_summary["time"]["last_run"]).to eq(1289390424)
     end
 
     it "should include all resource statuses" do
       resources_report = @report.raw_summary["resources"]
       Puppet::Resource::Status::STATES.each do |state|
-        resources_report.should be_include(state.to_s)
+        expect(resources_report).to be_include(state.to_s)
       end
     end
 
     %w{total failure success}.each do |r|
       it "should include event #{r}" do
         events_report = @report.raw_summary["events"]
-        events_report.should be_include(r)
+        expect(events_report).to be_include(r)
       end
     end
 
     it "should include config version" do
-      @report.raw_summary["version"]["config"].should == 1234567
+      expect(@report.raw_summary["version"]["config"]).to eq(1234567)
     end
 
     it "should include puppet version" do
-      @report.raw_summary["version"]["puppet"].should == Puppet.version
+      expect(@report.raw_summary["version"]["puppet"]).to eq(Puppet.version)
     end
 
     %w{Changes Total Resources Time Events}.each do |main|
       it "should include information on #{main} in the textual summary" do
-        @report.summary.should be_include(main)
+        expect(@report.summary).to be_include(main)
       end
     end
   end
@@ -384,7 +392,7 @@ describe Puppet::Transaction::Report do
     it "should not include @external_times" do
       report = Puppet::Transaction::Report.new('apply')
       report.add_times('config_retrieval', 1.0)
-      report.to_yaml_properties.should_not include('@external_times')
+      expect(report.to_yaml_properties).not_to include('@external_times')
     end
   end
 
@@ -397,7 +405,6 @@ describe Puppet::Transaction::Report do
   end
 
   it "can make a round trip through pson" do
-    Puppet[:report_serialization_format] = "pson"
     report = generate_report
 
     tripped = Puppet::Transaction::Report.convert_from(:pson, report.render)
@@ -405,40 +412,42 @@ describe Puppet::Transaction::Report do
     expect_equivalent_reports(tripped, report)
   end
 
-  def validate_as_json(report)
-    JSON::Validator.validate!(REPORT_SCHEMA, report)
+  it "generates pson which validates against the report schema" do
+    report = generate_report
+    expect(report.render).to validate_against('api/schemas/report.json')
   end
 
-  it "generates pson which validates against the report schema", :unless => Puppet.features.microsoft_windows? do
-    Puppet[:report_serialization_format] = "pson"
-    report = generate_report
-    validate_as_json(report.render)
+  it "generates pson for error report which validates against the report schema" do
+    error_report = generate_report_with_error
+    expect(error_report.render).to validate_against('api/schemas/report.json')
   end
 
   it "can make a round trip through yaml" do
-    Puppet[:report_serialization_format] = "yaml"
     report = generate_report
 
-    yaml_output = report.render
+    yaml_output = report.render(:yaml)
     tripped = Puppet::Transaction::Report.convert_from(:yaml, yaml_output)
 
-    yaml_output.should =~ /^--- /
+    expect(yaml_output).to match(/^--- /)
     expect_equivalent_reports(tripped, report)
   end
 
   def expect_equivalent_reports(tripped, report)
-    tripped.host.should == report.host
-    tripped.time.to_i.should == report.time.to_i
-    tripped.configuration_version.should == report.configuration_version
-    tripped.transaction_uuid.should == report.transaction_uuid
-    tripped.report_format.should == report.report_format
-    tripped.puppet_version.should == report.puppet_version
-    tripped.kind.should == report.kind
-    tripped.status.should == report.status
-    tripped.environment.should == report.environment
+    expect(tripped.host).to eq(report.host)
+    expect(tripped.time.to_i).to eq(report.time.to_i)
+    expect(tripped.configuration_version).to eq(report.configuration_version)
+    expect(tripped.transaction_uuid).to eq(report.transaction_uuid)
+    expect(tripped.code_id).to eq(report.code_id)
+    expect(tripped.catalog_uuid).to eq(report.catalog_uuid)
+    expect(tripped.cached_catalog_status).to eq(report.cached_catalog_status)
+    expect(tripped.report_format).to eq(report.report_format)
+    expect(tripped.puppet_version).to eq(report.puppet_version)
+    expect(tripped.kind).to eq(report.kind)
+    expect(tripped.status).to eq(report.status)
+    expect(tripped.environment).to eq(report.environment)
 
-    logs_as_strings(tripped).should == logs_as_strings(report)
-    metrics_as_hashes(tripped).should == metrics_as_hashes(report)
+    expect(logs_as_strings(tripped)).to eq(logs_as_strings(report))
+    expect(metrics_as_hashes(tripped)).to eq(metrics_as_hashes(report))
     expect_equivalent_resource_statuses(tripped.resource_statuses, report.resource_statuses)
   end
 
@@ -453,37 +462,69 @@ describe Puppet::Transaction::Report do
   end
 
   def expect_equivalent_resource_statuses(tripped, report)
-    tripped.keys.sort.should == report.keys.sort
+    expect(tripped.keys.sort).to eq(report.keys.sort)
 
     tripped.each_pair do |name, status|
       expected = report[name]
 
-      status.title.should == expected.title
-      status.file.should == expected.file
-      status.line.should == expected.line
-      status.resource.should == expected.resource
-      status.resource_type.should == expected.resource_type
-      status.containment_path.should == expected.containment_path
-      status.evaluation_time.should == expected.evaluation_time
-      status.tags.should == expected.tags
-      status.time.to_i.should == expected.time.to_i
-      status.failed.should == expected.failed
-      status.changed.should == expected.changed
-      status.out_of_sync.should == expected.out_of_sync
-      status.skipped.should == expected.skipped
-      status.change_count.should == expected.change_count
-      status.out_of_sync_count.should == expected.out_of_sync_count
-      status.events.should == expected.events
+      expect(status.title).to eq(expected.title)
+      expect(status.file).to eq(expected.file)
+      expect(status.line).to eq(expected.line)
+      expect(status.resource).to eq(expected.resource)
+      expect(status.resource_type).to eq(expected.resource_type)
+      expect(status.containment_path).to eq(expected.containment_path)
+      expect(status.evaluation_time).to eq(expected.evaluation_time)
+      expect(status.tags).to eq(expected.tags)
+      expect(status.time.to_i).to eq(expected.time.to_i)
+      expect(status.failed).to eq(expected.failed)
+      expect(status.changed).to eq(expected.changed)
+      expect(status.out_of_sync).to eq(expected.out_of_sync)
+      expect(status.skipped).to eq(expected.skipped)
+      expect(status.change_count).to eq(expected.change_count)
+      expect(status.out_of_sync_count).to eq(expected.out_of_sync_count)
+      expect(status.events.map(&:to_data_hash)).to eq(expected.events.map(&:to_data_hash))
     end
   end
 
   def generate_report
+    event_hash = {
+      :audited => false,
+      :property => 'message',
+      :previous_value => 'absent',
+      :desired_value => 'a resource',
+      :historical_value => nil,
+      :message => "defined 'message' as 'a resource'",
+      :name => :message_changed,
+      :status => 'success',
+    }
+    event = Puppet::Transaction::Event.new(event_hash)
+
     status = Puppet::Resource::Status.new(Puppet::Type.type(:notify).new(:title => "a resource"))
     status.changed = true
+    status.add_event(event)
 
     report = Puppet::Transaction::Report.new('apply', 1357986, 'test_environment', "df34516e-4050-402d-a166-05b03b940749")
     report << Puppet::Util::Log.new(:level => :warning, :message => "log message")
     report.add_times("timing", 4)
+    report.code_id = "some code id"
+    report.catalog_uuid = "some catalog uuid"
+    report.cached_catalog_status = "not_used"
+    report.add_resource_status(status)
+    report.finalize_report
+    report
+  end
+
+  def generate_report_with_error
+    status = Puppet::Resource::Status.new(Puppet::Type.type(:notify).new(:title => "a resource"))
+    status.changed = true
+    status.failed_because("bad stuff happened")
+
+    report = Puppet::Transaction::Report.new('apply', 1357986, 'test_environment', "df34516e-4050-402d-a166-05b03b940749")
+    report << Puppet::Util::Log.new(:level => :warning, :message => "log message")
+    report.add_times("timing", 4)
+    report.code_id = "some code id"
+    report.catalog_uuid = "some catalog uuid"
+    report.cached_catalog_status = "not_used"
     report.add_resource_status(status)
     report.finalize_report
     report

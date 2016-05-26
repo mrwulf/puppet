@@ -5,12 +5,12 @@ require 'rgen/metamodel_builder'
 # This means it can load a class from a gem, or from puppet modules.
 #
 class Puppet::Pops::Binder::BindingsLoader
-  @autoloader = Puppet::Util::Autoload.new("BindingsLoader", "puppet/bindings", :wrap => false)
+  @confdir = Puppet.settings[:confdir]
 
   # Returns a XXXXX given a fully qualified class name.
   # Lookup of class is never relative to the calling namespace.
-  # @param name [String, Array<String>, Array<Symbol>, Puppet::Pops::Types::PObjectType] A fully qualified
-  #   class name String (e.g. '::Foo::Bar', 'Foo::Bar'), a PObjectType, or a fully qualified name in Array form where each part
+  # @param name [String, Array<String>, Array<Symbol>, Puppet::Pops::Types::PAnyType] A fully qualified
+  #   class name String (e.g. '::Foo::Bar', 'Foo::Bar'), a PAnyType, or a fully qualified name in Array form where each part
   #   is either a String or a Symbol, e.g. `%w{Puppetx Puppetlabs SomeExtension}`.
   # @return [Class, nil] the looked up class or nil if no such class is loaded
   # @raise ArgumentError If the given argument has the wrong type
@@ -35,10 +35,13 @@ class Puppet::Pops::Binder::BindingsLoader
   def self.loadable?(basedir, name)
     # note, "lib" is added by the autoloader
     #
-    paths_for_name(name).find {|p| File.exists?(File.join(basedir, "lib/puppet/bindings", p)+'.rb') }
+    paths_for_name(name).find {|p| Puppet::FileSystem.exist?(File.join(basedir, "lib/puppet/bindings", p)+'.rb') }
   end
 
-  private
+  def self.loader()
+    @autoloader ||= Puppet::Util::Autoload.new("BindingsLoader", "puppet/bindings")
+  end
+  private_class_method :loader
 
   def self.provide_from_string(scope, name)
     name_path = name.split('::')
@@ -48,6 +51,7 @@ class Puppet::Pops::Binder::BindingsLoader
     end
     provide_from_name_path(scope, name, name_path)
   end
+  private_class_method :provide_from_string
 
   def self.provide_from_name_path(scope, name, name_path)
     # If bindings is already loaded, try this first
@@ -55,19 +59,22 @@ class Puppet::Pops::Binder::BindingsLoader
 
     unless result
       # Attempt to load it using the auto loader
-      paths_for_name(name).find {|path| @autoloader.load(path) }
+      paths_for_name(name).find {|path| loader.load(path, Puppet.lookup(:current_environment)) }
       result = Puppet::Bindings.resolve(scope, name)
     end
     result
   end
+  private_class_method :provide_from_name_path
 
   def self.paths_for_name(fq_name)
-    [de_camel(fq_name), downcased_path(fq_name)]
+    [de_camel(fq_name), downcased_path(fq_name)].uniq
   end
+  private_class_method :paths_for_name
 
   def self.downcased_path(fq_name)
     fq_name.to_s.gsub(/::/, '/').downcase
   end
+  private_class_method :downcased_path
 
   def self.de_camel(fq_name)
     fq_name.to_s.gsub(/::/, '/').
@@ -76,4 +83,5 @@ class Puppet::Pops::Binder::BindingsLoader
     tr("-", "_").
     downcase
   end
+  private_class_method :de_camel
 end

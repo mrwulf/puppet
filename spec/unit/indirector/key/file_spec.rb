@@ -5,12 +5,12 @@ require 'puppet/indirector/key/file'
 
 describe Puppet::SSL::Key::File do
   it "should have documentation" do
-    Puppet::SSL::Key::File.doc.should be_instance_of(String)
+    expect(Puppet::SSL::Key::File.doc).to be_instance_of(String)
   end
 
   it "should use the :privatekeydir as the collection directory" do
     Puppet[:privatekeydir] = File.expand_path("/key/dir")
-    Puppet::SSL::Key::File.collection_directory.should == Puppet[:privatekeydir]
+    expect(Puppet::SSL::Key::File.collection_directory).to eq(Puppet[:privatekeydir])
   end
 
   it "should store the ca key at the :cakey location" do
@@ -18,7 +18,7 @@ describe Puppet::SSL::Key::File do
     Puppet[:cakey] = File.expand_path("/ca/key")
     file = Puppet::SSL::Key::File.new
     file.stubs(:ca?).returns true
-    file.path("whatever").should == Puppet[:cakey]
+    expect(file.path("whatever")).to eq(Puppet[:cakey])
   end
 
   describe "when choosing the path for the public key" do
@@ -28,7 +28,7 @@ describe Puppet::SSL::Key::File do
 
       @searcher = Puppet::SSL::Key::File.new
       @searcher.stubs(:ca?).returns true
-      @searcher.public_key_path("whatever").should == Puppet[:capub]
+      expect(@searcher.public_key_path("whatever")).to eq(Puppet[:capub])
     end
 
     it "should use the host name plus '.pem' in :publickeydir for normal hosts" do
@@ -38,7 +38,7 @@ describe Puppet::SSL::Key::File do
 
       @searcher = Puppet::SSL::Key::File.new
       @searcher.stubs(:ca?).returns false
-      @searcher.public_key_path("whatever").should == File.expand_path("/public/key/dir/whatever.pem")
+      expect(@searcher.public_key_path("whatever")).to eq(File.expand_path("/public/key/dir/whatever.pem"))
     end
   end
 
@@ -64,33 +64,32 @@ describe Puppet::SSL::Key::File do
     end
 
     it "should save the public key when saving the private key" do
-      Puppet.settings.stubs(:writesub)
+      fh = StringIO.new
 
-      fh = mock 'filehandle'
-
-      Puppet.settings.expects(:writesub).with(:publickeydir, @public_key_path).yields fh
+      Puppet.settings.setting(:publickeydir).expects(:open_file).with(@public_key_path, 'w').yields fh
+      Puppet.settings.setting(:privatekeydir).stubs(:open_file)
       @public_key.expects(:to_pem).returns "my pem"
 
-      fh.expects(:print).with "my pem"
-
       @searcher.save(@request)
+
+      expect(fh.string).to eq("my pem")
     end
 
     it "should destroy the public key when destroying the private key" do
-      File.stubs(:unlink).with(@private_key_path)
-      FileTest.stubs(:exist?).with(@private_key_path).returns true
-      FileTest.expects(:exist?).with(@public_key_path).returns true
-      File.expects(:unlink).with(@public_key_path)
+      Puppet::FileSystem.expects(:unlink).with(Puppet::FileSystem.pathname(@private_key_path))
+      Puppet::FileSystem.expects(:exist?).with(Puppet::FileSystem.pathname(@private_key_path)).returns true
+      Puppet::FileSystem.expects(:exist?).with(Puppet::FileSystem.pathname(@public_key_path)).returns true
+      Puppet::FileSystem.expects(:unlink).with(Puppet::FileSystem.pathname(@public_key_path))
 
       @searcher.destroy(@request)
     end
 
     it "should not fail if the public key does not exist when deleting the private key" do
-      File.stubs(:unlink).with(@private_key_path)
+      Puppet::FileSystem.stubs(:unlink).with(Puppet::FileSystem.pathname(@private_key_path))
 
-      FileTest.stubs(:exist?).with(@private_key_path).returns true
-      FileTest.expects(:exist?).with(@public_key_path).returns false
-      File.expects(:unlink).with(@public_key_path).never
+      Puppet::FileSystem.stubs(:exist?).with(Puppet::FileSystem.pathname(@private_key_path)).returns true
+      Puppet::FileSystem.expects(:exist?).with(Puppet::FileSystem.pathname(@public_key_path)).returns false
+      Puppet::FileSystem.expects(:unlink).with(Puppet::FileSystem.pathname(@public_key_path)).never
 
       @searcher.destroy(@request)
     end

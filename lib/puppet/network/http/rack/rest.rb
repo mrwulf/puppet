@@ -1,14 +1,12 @@
 require 'openssl'
 require 'cgi'
 require 'puppet/network/http/handler'
-require 'puppet/network/http/rack/httphandler'
 require 'puppet/util/ssl'
+require 'uri'
 
-class Puppet::Network::HTTP::RackREST < Puppet::Network::HTTP::RackHttpHandler
-
+class Puppet::Network::HTTP::RackREST
   include Puppet::Network::HTTP::Handler
 
-  HEADER_ACCEPT = 'HTTP_ACCEPT'.freeze
   ContentType = 'Content-Type'.freeze
 
   CHUNK_SIZE = 8192
@@ -31,7 +29,9 @@ class Puppet::Network::HTTP::RackREST < Puppet::Network::HTTP::RackHttpHandler
 
   def initialize(args={})
     super()
-    initialize_for_puppet(args)
+    register([Puppet::Network::HTTP::API.master_routes,
+              Puppet::Network::HTTP::API.ca_routes,
+              Puppet::Network::HTTP::API.not_found_upgrade])
   end
 
   def set_content_type(response, format)
@@ -51,20 +51,12 @@ class Puppet::Network::HTTP::RackREST < Puppet::Network::HTTP::RackHttpHandler
 
   # Retrieve all headers from the http request, as a map.
   def headers(request)
-    request.env.select {|k,v| k.start_with? 'HTTP_'}.inject({}) do |m, (k,v)|
+    headers = request.env.select {|k,v| k.start_with? 'HTTP_'}.inject({}) do |m, (k,v)|
       m[k.sub(/^HTTP_/, '').gsub('_','-').downcase] = v
       m
     end
-  end
-
-  # Retrieve the accept header from the http request.
-  def accept_header(request)
-    request.env[HEADER_ACCEPT]
-  end
-
-  # Retrieve the accept header from the http request.
-  def content_type_header(request)
-    request.content_type
+    headers['content-type'] = request.content_type
+    headers
   end
 
   # Return which HTTP verb was used in this request.
@@ -88,7 +80,15 @@ class Puppet::Network::HTTP::RackREST < Puppet::Network::HTTP::RackHttpHandler
 
   # what path was requested? (this is, without any query parameters)
   def path(request)
-    request.path
+    # The value that Passenger provides for 'path' is escaped
+    # (URL percent-encoded), see
+    # https://github.com/phusion/passenger/blob/release-5.0.26/src/apache2_module/Hooks.cpp#L885
+    # for the implementation as hooked up to an Apache web server.  Code
+    # in the indirector / HTTP layer which consumes this path, however, assumes
+    # that it has already been unescaped, so it is unescaped here.
+    if request.path
+      URI.unescape(request.path)
+    end
   end
 
   # return the request body
@@ -102,8 +102,11 @@ class Puppet::Network::HTTP::RackREST < Puppet::Network::HTTP::RackHttpHandler
     cert = request.env['SSL_CLIENT_CERT']
     # NOTE: The SSL_CLIENT_CERT environment variable will be the empty string
     # when Puppet agent nodes have not yet obtained a signed certificate.
-    return nil if cert.nil? or cert.empty?
-    OpenSSL::X509::Certificate.new(cert)
+    if cert.nil? || cert.empty?
+      nil
+    else
+      Puppet::SSL::Certificate.from_instance(OpenSSL::X509::Certificate.new(cert))
+    end
   end
 
   # Passenger freaks out if we finish handling the request without reading any

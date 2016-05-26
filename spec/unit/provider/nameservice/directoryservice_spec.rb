@@ -1,6 +1,9 @@
 #! /usr/bin/env ruby
 require 'spec_helper'
 
+module Puppet::Util::Plist
+end
+
 # We use this as a reasonable way to obtain all the support infrastructure.
 [:group].each do |type_for_this_round|
   provider_class = Puppet::Type.type(type_for_this_round).provider(:directoryservice)
@@ -37,16 +40,7 @@ require 'spec_helper'
 end
 
 describe 'DirectoryService.single_report' do
-  it 'should fail on OS X < 10.5' do
-    Puppet::Provider::NameService::DirectoryService.stubs(:get_macosx_version_major).returns("10.4")
-
-    expect {
-      Puppet::Provider::NameService::DirectoryService.single_report('resource_name')
-    }.to raise_error(RuntimeError, "Puppet does not support OS X versions < 10.5")
-  end
-
-  it 'should use plist data on >= 10.5' do
-    Puppet::Provider::NameService::DirectoryService.stubs(:get_macosx_version_major).returns("10.5")
+  it 'should use plist data' do
     Puppet::Provider::NameService::DirectoryService.stubs(:get_ds_path).returns('Users')
     Puppet::Provider::NameService::DirectoryService.stubs(:list_all_present).returns(
       ['root', 'user1', 'user2', 'resource_name']
@@ -60,19 +54,10 @@ describe 'DirectoryService.single_report' do
 end
 
 describe 'DirectoryService.get_exec_preamble' do
-  it 'should fail on OS X < 10.5' do
-    Puppet::Provider::NameService::DirectoryService.stubs(:get_macosx_version_major).returns("10.4")
-
-    expect {
-      Puppet::Provider::NameService::DirectoryService.get_exec_preamble('-list')
-    }.to raise_error(RuntimeError, "Puppet does not support OS X versions < 10.5")
-  end
-
-  it 'should use plist data on >= 10.5' do
-    Puppet::Provider::NameService::DirectoryService.stubs(:get_macosx_version_major).returns("10.5")
+  it 'should use plist data' do
     Puppet::Provider::NameService::DirectoryService.stubs(:get_ds_path).returns('Users')
 
-    Puppet::Provider::NameService::DirectoryService.get_exec_preamble('-list').should include("-plist")
+    expect(Puppet::Provider::NameService::DirectoryService.get_exec_preamble('-list')).to include("-plist")
   end
 end
 
@@ -97,52 +82,40 @@ describe 'DirectoryService password behavior' do
   end
 
   let :shadow_hash_data do
-    {'ShadowHashData' => [StringIO.new(binary_plist)]}
+    {'ShadowHashData' => [binary_plist]}
   end
 
   subject do
     Puppet::Provider::NameService::DirectoryService
   end
 
-  before :each do
-    subject.expects(:get_macosx_version_major).returns("10.7")
-  end
-
-  it 'should execute convert_binary_to_xml once when getting the password on >= 10.7' do
-    subject.expects(:convert_binary_to_xml).returns({'SALTED-SHA512' => StringIO.new(pw_string)})
-    File.expects(:exists?).with(plist_path).once.returns(true)
-    Plist.expects(:parse_xml).returns(shadow_hash_data)
-    # On Mac OS X 10.7 we first need to convert to xml when reading the password
-    subject.expects(:plutil).with('-convert', 'xml1', '-o', '/dev/stdout', plist_path)
+  it 'should execute convert_binary_to_hash once when getting the password' do
+    subject.expects(:convert_binary_to_hash).returns({'SALTED-SHA512' => pw_string})
+    Puppet::FileSystem.expects(:exist?).with(plist_path).once.returns(true)
+    Puppet::Util::Plist.expects(:read_plist_file).returns(shadow_hash_data)
     subject.get_password('uid', 'jeff')
   end
 
-  it 'should fail if a salted-SHA512 password hash is not passed in >= 10.7' do
+  it 'should fail if a salted-SHA512 password hash is not passed in' do
     expect {
       subject.set_password('jeff', 'uid', 'badpassword')
     }.to raise_error(RuntimeError, /OS X 10.7 requires a Salted SHA512 hash password of 136 characters./)
   end
 
   it 'should convert xml-to-binary and binary-to-xml when setting the pw on >= 10.7' do
-    subject.expects(:convert_binary_to_xml).returns({'SALTED-SHA512' => StringIO.new(pw_string)})
-    subject.expects(:convert_xml_to_binary).returns(binary_plist)
-    File.expects(:exists?).with(plist_path).once.returns(true)
-    Plist.expects(:parse_xml).returns(shadow_hash_data)
-    # On Mac OS X 10.7 we first need to convert to xml
-    subject.expects(:plutil).with('-convert', 'xml1', '-o', '/dev/stdout', plist_path)
-    # And again back to a binary plist or DirectoryService will complain
-    subject.expects(:plutil).with('-convert', 'binary1', plist_path)
-    Plist::Emit.expects(:save_plist).with(shadow_hash_data, plist_path)
+    subject.expects(:convert_binary_to_hash).returns({'SALTED-SHA512' => pw_string})
+    subject.expects(:convert_hash_to_binary).returns(binary_plist)
+    Puppet::FileSystem.expects(:exist?).with(plist_path).once.returns(true)
+    Puppet::Util::Plist.expects(:read_plist_file).returns(shadow_hash_data)
+    Puppet::Util::Plist.expects(:write_plist_file).with(shadow_hash_data, plist_path, :binary)
     subject.set_password('jeff', 'uid', sha512_hash)
   end
 
   it '[#13686] should handle an empty ShadowHashData field in the users plist' do
-    subject.expects(:convert_xml_to_binary).returns(binary_plist)
-    File.expects(:exists?).with(plist_path).once.returns(true)
-    Plist.expects(:parse_xml).returns({'ShadowHashData' => nil})
-    subject.expects(:plutil).with('-convert', 'xml1', '-o', '/dev/stdout', plist_path)
-    subject.expects(:plutil).with('-convert', 'binary1', plist_path)
-    Plist::Emit.expects(:save_plist)
+    subject.expects(:convert_hash_to_binary).returns(binary_plist)
+    Puppet::FileSystem.expects(:exist?).with(plist_path).once.returns(true)
+    Puppet::Util::Plist.expects(:read_plist_file).returns({'ShadowHashData' => nil})
+    Puppet::Util::Plist.expects(:write_plist_file)
     subject.set_password('jeff', 'uid', sha512_hash)
   end
 end

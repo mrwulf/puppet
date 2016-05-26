@@ -1,3 +1,5 @@
+require 'puppet'
+
 class Puppet::Util::Feature
   attr_reader :path
 
@@ -15,7 +17,7 @@ class Puppet::Util::Feature
     if block_given?
       begin
         result = yield
-      rescue Exception => detail
+      rescue StandardError,ScriptError => detail
         warn "Failed to load feature test for #{name}: #{detail}"
         result = false
       end
@@ -23,10 +25,19 @@ class Puppet::Util::Feature
     end
 
     meta_def(method) do
-      # Positive cache only, except blocks which are executed just once above
-      final = @results[name] || block_given?
-      @results[name] = test(name, options) unless final
-      @results[name]
+      # we return a cached result if:
+      #  * if a block is given (and we just evaluated it above)
+      #  * if we already have a positive result
+      #  * if we've tested this feature before and it failed, but we're
+      #    configured to always cache
+      if block_given?     ||
+          @results[name]  ||
+          (@results.has_key?(name) && (Puppet[:always_cache_features] || !Puppet[:always_retry_plugins]))
+        @results[name]
+      else
+        @results[name] = test(name, options)
+        @results[name]
+      end
     end
   end
 
@@ -70,11 +81,12 @@ class Puppet::Util::Feature
   def load_library(lib, name)
     raise ArgumentError, "Libraries must be passed as strings not #{lib.class}" unless lib.is_a?(String)
 
+    @rubygems ||= Puppet::Util::RubyGems::Source.new
+    @rubygems.clear_paths
+
     begin
       require lib
-    rescue SystemExit,NoMemoryError
-      raise
-    rescue Exception
+    rescue ScriptError
       Puppet.debug "Failed to load library '#{lib}' for feature '#{name}'"
       return false
     end

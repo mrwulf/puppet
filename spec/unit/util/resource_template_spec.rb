@@ -6,21 +6,21 @@ require 'puppet/util/resource_template'
 describe Puppet::Util::ResourceTemplate do
   describe "when initializing" do
     it "should fail if the template does not exist" do
-      FileTest.expects(:exist?).with("/my/template").returns false
-      lambda { Puppet::Util::ResourceTemplate.new("/my/template", mock('resource')) }.should raise_error(ArgumentError)
+      Puppet::FileSystem.expects(:exist?).with("/my/template").returns false
+      expect { Puppet::Util::ResourceTemplate.new("/my/template", mock('resource')) }.to raise_error(ArgumentError)
     end
 
     it "should not create the ERB template" do
       ERB.expects(:new).never
-      FileTest.expects(:exist?).with("/my/template").returns true
+      Puppet::FileSystem.expects(:exist?).with("/my/template").returns true
       Puppet::Util::ResourceTemplate.new("/my/template", mock('resource'))
     end
   end
 
   describe "when evaluating" do
     before do
-      FileTest.stubs(:exist?).returns true
-      File.stubs(:read).returns "eh"
+      Puppet::FileSystem.stubs(:exist?).returns true
+      Puppet::FileSystem.stubs(:read).returns "eh"
 
       @template = stub 'template', :result => nil
       ERB.stubs(:new).returns @template
@@ -38,7 +38,7 @@ describe Puppet::Util::ResourceTemplate do
     end
 
     it "should create a template instance with the contents of the file" do
-      File.expects(:read).with("/my/template").returns "yay"
+      Puppet::FileSystem.expects(:read).with("/my/template", :encoding => 'utf-8').returns "yay"
       ERB.expects(:new).with("yay", 0, "-").returns(@template)
 
       @wrapper.stubs :set_resource_variables
@@ -51,7 +51,7 @@ describe Puppet::Util::ResourceTemplate do
 
       @wrapper.expects(:binding).returns "mybinding"
       @template.expects(:result).with("mybinding").returns "myresult"
-      @wrapper.evaluate.should == "myresult"
+      expect(@wrapper.evaluate).to eq("myresult")
     end
   end
 end

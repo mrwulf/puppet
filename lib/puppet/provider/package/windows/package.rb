@@ -35,14 +35,14 @@ class Puppet::Provider::Package::Windows
           mode |= KEY_READ
           begin
             open(hive, 'Software\Microsoft\Windows\CurrentVersion\Uninstall', mode) do |uninstall|
-              uninstall.each_key do |name, wtime|
+              each_key(uninstall) do |name, wtime|
                 open(hive, "#{uninstall.keyname}\\#{name}", mode) do |key|
                   yield key, values(key)
                 end
               end
             end
           rescue Puppet::Util::Windows::Error => e
-            raise e unless e.code == Windows::Error::ERROR_FILE_NOT_FOUND
+            raise e unless e.code == Puppet::Util::Windows::Error::ERROR_FILE_NOT_FOUND
           end
         end
       end
@@ -58,15 +58,35 @@ class Puppet::Provider::Package::Windows
         # REMIND: what about msp, etc
         MsiPackage
       when /\.exe"?\Z/i
-        fail("The source does not exist: '#{resource[:source]}'") unless File.exists?(resource[:source])
+        fail("The source does not exist: '#{resource[:source]}'") unless Puppet::FileSystem.exist?(resource[:source])
         ExePackage
       else
         fail("Don't know how to install '#{resource[:source]}'")
       end
     end
 
+    def self.munge(value)
+      quote(replace_forward_slashes(value))
+    end
+
+    def self.replace_forward_slashes(value)
+      if value.include?('/')
+        value.gsub!('/', "\\")
+        Puppet.debug('Package source parameter contained /s - replaced with \\s')
+      end
+      value
+    end
+
     def self.quote(value)
       value.include?(' ') ? %Q["#{value.gsub(/"/, '\"')}"] : value
+    end
+
+    def self.get_display_name(values)
+      return if values.nil?
+      return values['DisplayName'] if values['DisplayName'] && values['DisplayName'].length > 0
+      return values['QuietDisplayName'] if values['QuietDisplayName'] && values['QuietDisplayName'].length > 0
+
+      ''
     end
 
     def initialize(name, version)

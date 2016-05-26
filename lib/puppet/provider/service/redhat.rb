@@ -8,27 +8,33 @@ Puppet::Type.type(:service).provide :redhat, :parent => :init, :source => :init 
 
   commands :chkconfig => "/sbin/chkconfig", :service => "/sbin/service"
 
-  defaultfor :osfamily => [:redhat, :suse]
+  defaultfor :osfamily => :redhat
+  defaultfor :osfamily => :suse, :operatingsystemmajrelease => ["10", "11"]
 
   # Remove the symlinks
   def disable
     # The off method operates on run levels 2,3,4 and 5 by default We ensure
     # all run levels are turned off because the reset method may turn on the
     # service in run levels 0, 1 and/or 6
-    output = chkconfig("--level", "0123456", @resource[:name], :off)
-  rescue Puppet::ExecutionFailure
-    raise Puppet::Error, "Could not disable #{self.name}: #{output}"
+    # We're not using --del here because we want to disable the service only,
+    # and --del removes the service from chkconfig management
+    chkconfig("--level", "0123456", @resource[:name], :off)
+  rescue Puppet::ExecutionFailure => detail
+    raise Puppet::Error, "Could not disable #{self.name}: #{detail}", detail.backtrace
   end
 
   def enabled?
-    # Checkconfig always returns 0 on SuSE unless the --check flag is used.
-    args = (Facter.value(:osfamily) == 'Suse' ? ['--check'] : [])
+    name = @resource[:name]
 
     begin
-      chkconfig(@resource[:name], *args)
+      output = chkconfig name
     rescue Puppet::ExecutionFailure
       return :false
     end
+
+    # For Suse OS family, chkconfig returns 0 even if the service is disabled or non-existent
+    # Therefore, check the output for '<name>  on' to see if it is enabled
+    return :false unless Facter.value(:osfamily) != 'Suse' || output =~ /^#{name}\s+on$/
 
     :true
   end
@@ -36,9 +42,10 @@ Puppet::Type.type(:service).provide :redhat, :parent => :init, :source => :init 
   # Don't support them specifying runlevels; always use the runlevels
   # in the init scripts.
   def enable
+      chkconfig("--add", @resource[:name])
       chkconfig(@resource[:name], :on)
   rescue Puppet::ExecutionFailure => detail
-    raise Puppet::Error, "Could not enable #{self.name}: #{detail}"
+    raise Puppet::Error, "Could not enable #{self.name}: #{detail}", detail.backtrace
   end
 
   def initscript

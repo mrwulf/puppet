@@ -48,7 +48,7 @@ OPTIONS
 Any configuration setting which is valid in the configuration file is
 also a valid long argument, e.g. '--server=master.domain.com'. See the
 configuration file documentation at
-http://docs.puppetlabs.com/references/latest/configuration.html for
+https://docs.puppetlabs.com/puppet/latest/reference/configuration.html for
 the full list of acceptable settings.
 
 * --archive_files:
@@ -88,14 +88,10 @@ Copyright (c) 2011 Puppet Labs, LLC Licensed under the Apache 2.0 License
       exit(1)
     end
 
-    if options[:debug]
-      Puppet::Util::Log.level = :debug
-    elsif options[:verbose]
-      Puppet::Util::Log.level = :info
-    end
+    set_log_level
 
     Puppet::Transaction::Report.indirection.terminus_class = :rest
-    Puppet::Resource::Catalog.indirection.terminus_class = :yaml
+    Puppet::Resource::Catalog.indirection.terminus_class = Puppet[:catalog_cache_terminus] || :json
   end
 
   def preinit

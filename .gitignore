@@ -19,3 +19,11 @@ Gemfile.local
 .bundle/
 puppet-acceptance/
 /.project
+.idea/
+.ruby-version
+.ruby-gemset
+acceptance/junit
+acceptance/log
+acceptance/.bundle
+# emacs backup files
+*~

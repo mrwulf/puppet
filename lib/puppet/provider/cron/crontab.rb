@@ -9,7 +9,7 @@ Puppet::Type.type(:cron).provide(:crontab, :parent => Puppet::Provider::ParsedFi
 
   text_line :blank, :match => %r{^\s*$}
 
-  text_line :environment, :match => %r{^\s*\w+=}
+  text_line :environment, :match => %r{^\s*\w+\s*=}
 
   def self.filetype
   tabname = case Facter.value(:osfamily)
@@ -68,6 +68,7 @@ Puppet::Type.type(:cron).provide(:crontab, :parent => Puppet::Provider::ParsedFi
 
     def to_line(record)
       str = ""
+      record[:name] = nil if record[:unmanaged]
       str = "# Puppet Name: #{record[:name]}\n" if record[:name]
       if record[:environment] and record[:environment] != :absent
         str += record[:environment].map {|line| "#{line}\n"}.join('')
@@ -88,6 +89,14 @@ Puppet::Type.type(:cron).provide(:crontab, :parent => Puppet::Provider::ParsedFi
     end
   end
 
+  def create
+    if resource.should(:command) then
+      super
+    else
+      resource.err "no command specified, cannot create"
+    end
+  end
+
   # Look up a resource with a given name whose user matches a record target
   #
   # @api private
@@ -104,8 +113,11 @@ Puppet::Type.type(:cron).provide(:crontab, :parent => Puppet::Provider::ParsedFi
   def self.resource_for_record(record, resources)
     resource = super
 
-    if resource and record[:target] == resource[:user]
-      resource
+    if resource
+      target = resource[:target] || resource[:user]
+      if record[:target] == target
+        resource
+      end
     end
   end
 
@@ -132,7 +144,8 @@ Puppet::Type.type(:cron).provide(:crontab, :parent => Puppet::Provider::ParsedFi
   # See if we can match the record against an existing cron job.
   def self.match(record, resources)
     # if the record is named, do not even bother (#19876)
-    return false if record[:name]
+    # except the resource name was implicitly generated (#3220)
+    return false if record[:name] and !record[:unmanaged]
     resources.each do |name, resource|
       # Match the command first, since it's the most important one.
       next unless record[:target] == resource[:target]
@@ -167,6 +180,8 @@ Puppet::Type.type(:cron).provide(:crontab, :parent => Puppet::Provider::ParsedFi
     false
   end
 
+  @name_index = 0
+
   # Collapse name and env records.
   def self.prefetch_hook(records)
     name = nil
@@ -194,6 +209,11 @@ Puppet::Type.type(:cron).provide(:crontab, :parent => Puppet::Provider::ParsedFi
         if name
           record[:name] = name
           name = nil
+        else
+          cmd_string = record[:command].gsub(/\s+/, "_")
+          index = ( @name_index += 1 )
+          record[:name] = "unmanaged:#{cmd_string}-#{ index.to_s }"
+          record[:unmanaged] = true
         end
         if envs.nil? or envs.empty?
           record[:environment] = :absent
@@ -236,5 +256,42 @@ Puppet::Type.type(:cron).provide(:crontab, :parent => Puppet::Provider::ParsedFi
   def user
     @property_hash[:user] || @property_hash[:target]
   end
+
+  CRONTAB_DIR = case Facter.value("osfamily")
+  when "Debian", "HP-UX"
+    "/var/spool/cron/crontabs"
+  when /BSD/
+    "/var/cron/tabs"
+  when "Darwin"
+    "/usr/lib/cron/tabs/"
+  else
+    "/var/spool/cron"
+  end
+
+  # Yield the names of all crontab files stored on the local system.
+  #
+  # @note Ignores files that are not writable for the puppet process.
+  #
+  # @api private
+  def self.enumerate_crontabs
+    Puppet.debug "looking for crontabs in #{CRONTAB_DIR}"
+    return unless File.readable?(CRONTAB_DIR)
+    Dir.foreach(CRONTAB_DIR) do |file|
+      path = "#{CRONTAB_DIR}/#{file}"
+      yield(file) if File.file?(path) and File.writable?(path)
+    end
+  end
+
+
+  # Include all plausible crontab files on the system
+  # in the list of targets (#11383 / PUP-1381)
+  def self.targets(resources = nil)
+    targets = super(resources)
+    enumerate_crontabs do |target|
+      targets << target
+    end
+    targets.uniq
+  end
+
 end
 

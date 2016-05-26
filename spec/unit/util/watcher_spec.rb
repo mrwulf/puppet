@@ -14,7 +14,7 @@ describe Puppet::Util::Watcher do
     let(:filename) { "fake" }
 
     def after_reading_the_sequence(initial, *results)
-      expectation = File.stubs(:stat).with(filename)
+      expectation = Puppet::FileSystem.expects(:stat).with(filename).at_least(1)
       ([initial] + results).each do |result|
         expectation = if result.is_a? Class
                         expectation.raises(result)
@@ -29,7 +29,7 @@ describe Puppet::Util::Watcher do
       watcher
     end
 
-    it "is intially unchanged" do
+    it "is initially unchanged" do
       expect(after_reading_the_sequence(ctime(20))).to_not be_changed
     end
 

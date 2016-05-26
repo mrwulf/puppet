@@ -6,9 +6,14 @@ Puppet::Type.type(:package).provide :gem, :parent => Puppet::Provider::Package d
   desc "Ruby Gem support.  If a URL is passed via `source`, then that URL is used as the
     remote gem repository; if a source is present but is not a valid URL, it will be
     interpreted as the path to a local gem file.  If source is not present at all,
-    the gem will be installed from the default gem repositories."
+    the gem will be installed from the default gem repositories.
 
-  has_feature :versionable
+    This provider supports the `install_options` and `uninstall_options` attributes,
+    which allow command-line flags to be passed to the gem command.
+    These options should be specified as a string (e.g. '--flag'), a hash (e.g. {'--flag' => 'value'}),
+    or an array where each element is either a string or a hash."
+
+  has_feature :versionable, :install_options, :uninstall_options
 
   commands :gemcmd => "gem"
 
@@ -24,7 +29,7 @@ Puppet::Type.type(:package).provide :gem, :parent => Puppet::Provider::Package d
       gem_list_command << "--source" << options[:source]
     end
     if name = options[:justme]
-      gem_list_command << name + "$"
+      gem_list_command << "^" + name + "$"
     end
 
     begin
@@ -32,7 +37,7 @@ Puppet::Type.type(:package).provide :gem, :parent => Puppet::Provider::Package d
         map {|set| gemsplit(set) }.
         reject {|x| x.nil? }
     rescue Puppet::ExecutionFailure => detail
-      raise Puppet::Error, "Could not list gems: #{detail}"
+      raise Puppet::Error, "Could not list gems: #{detail}", detail.backtrace
     end
 
     if options[:justme]
@@ -50,12 +55,12 @@ Puppet::Type.type(:package).provide :gem, :parent => Puppet::Provider::Package d
     # so we don't need to check for them
 
     if desc =~ /^(\S+)\s+\((.+)\)/
-      name = $1
+      gem_name = $1
       versions = $2.split(/,\s*/)
       {
-        :name     => name,
-        :ensure   => versions,
-        :provider => :gem
+        :name     => gem_name,
+        :ensure   => versions.map{|v| v.split[0]},
+        :provider => name
       }
     else
       Puppet.warning "Could not match #{desc}" unless desc.chomp.empty?
@@ -69,6 +74,22 @@ Puppet::Type.type(:package).provide :gem, :parent => Puppet::Provider::Package d
     end
   end
 
+  def insync?(is)
+    return false unless is && is != :absent
+
+    begin
+      dependency = Gem::Dependency.new('', resource[:ensure])
+    rescue ArgumentError
+      # Bad requirements will cause an error during gem command invocation, so just return not in sync
+      return false
+    end
+
+    is = [is] unless is.is_a? Array
+
+    # Check if any version matches the dependency
+    is.any? { |version| dependency.match?('', version) }
+  end
+
   def install(useversion = true)
     command = [command(:gemcmd), "install"]
     command << "-v" << resource[:ensure] if (! resource[:ensure].is_a? Symbol) and useversion
@@ -77,7 +98,7 @@ Puppet::Type.type(:package).provide :gem, :parent => Puppet::Provider::Package d
       begin
         uri = URI.parse(source)
       rescue => detail
-        fail "Invalid source '#{uri}': #{detail}"
+        self.fail Puppet::Error, "Invalid source '#{uri}': #{detail}", detail
       end
 
       case uri.scheme
@@ -90,12 +111,19 @@ Puppet::Type.type(:package).provide :gem, :parent => Puppet::Provider::Package d
         # we don't support puppet:// URLs (yet)
         raise Puppet::Error.new("puppet:// URLs are not supported as gem sources")
       else
-        # interpret it as a gem repository
-        command << "--source" << "#{source}" << resource[:name]
+        # check whether it's an absolute file path to help Windows out
+        if Puppet::Util.absolute_path?(source)
+          command << source
+        else
+          # interpret it as a gem repository
+          command << "--source" << "#{source}" << resource[:name]
+        end
       end
     else
       command << "--no-rdoc" << "--no-ri" << resource[:name]
     end
+
+    command += install_options if resource[:install_options]
 
     output = execute(command)
     # Apparently some stupid gem versions don't exit non-0 on failure
@@ -116,10 +144,26 @@ Puppet::Type.type(:package).provide :gem, :parent => Puppet::Provider::Package d
   end
 
   def uninstall
-    gemcmd "uninstall", "-x", "-a", resource[:name]
+    command = [command(:gemcmd), "uninstall"]
+    command << "--executables" << "--all" << resource[:name]
+
+    command += uninstall_options if resource[:uninstall_options]
+
+    output = execute(command)
+
+    # Apparently some stupid gem versions don't exit non-0 on failure
+    self.fail "Could not uninstall: #{output.chomp}" if output.include?("ERROR")
   end
 
   def update
     self.install(false)
+  end
+
+  def install_options
+    join_options(resource[:install_options])
+  end
+
+  def uninstall_options
+    join_options(resource[:uninstall_options])
   end
 end

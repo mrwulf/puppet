@@ -106,6 +106,12 @@ class Puppet::Settings::FileSetting < Puppet::Settings::StringSetting
     @owner.value
   end
 
+  def set_meta(meta)
+    self.owner = meta.owner if meta.owner
+    self.group = meta.group if meta.group
+    self.mode = meta.mode if meta.mode
+  end
+
   def munge(value)
     if value.is_a?(String) and value != ':memory:' # for sqlite3 in-memory tests
       value = File.expand_path(value)
@@ -128,7 +134,7 @@ class Puppet::Settings::FileSetting < Puppet::Settings::StringSetting
     # Make sure the paths are fully qualified.
     path = File.expand_path(path)
 
-    return nil unless type == :directory or create_files? or File.exist?(path)
+    return nil unless type == :directory or create_files? or Puppet::FileSystem.exist?(path)
     return nil if path =~ /^\/dev/ or path =~ /^[A-Z]:\/dev/i
 
     resource = Puppet::Resource.new(:file, path)
@@ -178,8 +184,52 @@ class Puppet::Settings::FileSetting < Puppet::Settings::StringSetting
     }
   end
 
-private
+  # @api private
+  def exclusive_open(option = 'r', &block)
+    controlled_access do |mode|
+      Puppet::FileSystem.exclusive_open(file(), mode, option, &block)
+    end
+  end
+
+  # @api private
+  def open(option = 'r', &block)
+    controlled_access do |mode|
+      Puppet::FileSystem.open(file, mode, option, &block)
+    end
+  end
+
+  private
+
+  def file
+    Puppet::FileSystem.pathname(value)
+  end
+
   def unknown_value(parameter, value)
     raise SettingError, "The #{parameter} parameter for the setting '#{name}' must be either 'root' or 'service', not '#{value}'"
+  end
+
+  def controlled_access(&block)
+    chown = nil
+    if Puppet.features.root?
+      chown = [owner, group]
+    else
+      chown = [nil, nil]
+    end
+
+    Puppet::Util::SUIDManager.asuser(*chown) do
+      # Update the umask to make non-executable files
+      Puppet::Util.withumask(File.umask ^ 0111) do
+        yielded_value = case self.mode
+                        when String
+                          self.mode.to_i(8)
+                        when NilClass
+                          0640
+                        else
+                          self.mode
+                        end
+
+        yield yielded_value
+      end
+    end
   end
 end

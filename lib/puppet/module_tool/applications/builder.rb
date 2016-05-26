@@ -1,4 +1,7 @@
 require 'fileutils'
+require 'json'
+require 'puppet/file_system'
+require 'pathspec'
 
 module Puppet::ModuleTool
   module Applications
@@ -11,10 +14,10 @@ module Puppet::ModuleTool
       end
 
       def run
-        load_modulefile!
+        load_metadata!
         create_directory
         copy_contents
-        add_metadata
+        write_json
         Puppet.notice "Building #{@path} for release"
         pack
         relative = Pathname.new(archive_file).relative_path_from(Pathname.new(File.expand_path(Dir.pwd)))
@@ -40,7 +43,7 @@ module Puppet::ModuleTool
       def pack
         FileUtils.rm archive_file rescue nil
 
-        tar = Puppet::ModuleTool::Tar.instance(metadata.full_module_name)
+        tar = Puppet::ModuleTool::Tar.instance
         Dir.chdir(@pkg_path) do
           tar.pack(metadata.release_name, archive_file)
         end
@@ -54,20 +57,86 @@ module Puppet::ModuleTool
         FileUtils.mkdir(build_path)
       end
 
-      def copy_contents
-        Dir[File.join(@path, '*')].each do |path|
-          case File.basename(path)
-          when *Puppet::ModuleTool::ARTIFACTS
-            next
+      def ignored_files
+        if @ignored_files
+          return @ignored_files
+        else
+          pmtignore = File.join(@path, '.pmtignore')
+          gitignore = File.join(@path, '.gitignore')
+
+          if File.file? pmtignore
+            @ignored_files = PathSpec.new Puppet::FileSystem.read(pmtignore, :encoding => 'utf-8')
+          elsif File.file? gitignore
+            @ignored_files = PathSpec.new Puppet::FileSystem.read(gitignore, :encoding => 'utf-8')
           else
-            FileUtils.cp_r path, build_path
+            @ignored_files = PathSpec.new
           end
         end
       end
 
-      def add_metadata
-        File.open(File.join(build_path, 'metadata.json'), 'w') do |f|
-          f.write(PSON.pretty_generate(metadata))
+      def copy_contents
+        symlinks = []
+        Find.find(File.join(@path)) do |path|
+          # because Find.find finds the path itself
+          if path == @path
+            next
+          end
+
+          # Needed because pathspec looks for a trailing slash in the path to
+          # determine if a path is a directory
+          path = path.to_s + '/' if File.directory? path
+
+          # if it matches, then prune it with fire
+          unless ignored_files.match_paths([path], @path).empty?
+            Find.prune
+          end
+
+          # don't copy all the Puppet ARTIFACTS
+          rel = Pathname.new(path).relative_path_from(Pathname.new(@path))
+          case rel.to_s
+          when *Puppet::ModuleTool::ARTIFACTS
+            Find.prune
+          end
+
+          # make dir tree, copy files, and add symlinks to the symlinks list
+          dest = "#{build_path}/#{rel.to_s}"
+          if File.directory? path
+            FileUtils.mkdir dest, :mode => File.stat(path).mode
+          elsif Puppet::FileSystem.symlink? path
+            symlinks << path
+          else
+            FileUtils.cp path, dest, :preserve => true
+          end
+        end
+
+        # send a message about each symlink and raise an error if they exist
+        unless symlinks.empty?
+          symlinks.each do |s|
+            s = Pathname.new s
+            mpath = Pathname.new @path
+            Puppet.warning "Symlinks in modules are unsupported. Please investigate symlink #{s.relative_path_from mpath} -> #{s.realpath.relative_path_from mpath}."
+          end
+
+          raise Puppet::ModuleTool::Errors::ModuleToolError, "Found symlinks. Symlinks in modules are not allowed, please remove them."
+        end
+      end
+
+      def write_json
+        metadata_path = File.join(build_path, 'metadata.json')
+
+        if metadata.to_hash.include? 'checksums'
+          Puppet.warning "A 'checksums' field was found in metadata.json. This field will be ignored and can safely be removed."
+        end
+
+        # TODO: This may necessarily change the order in which the metadata.json
+        # file is packaged from what was written by the user.  This is a
+        # regretable, but required for now.
+        File.open(metadata_path, 'w') do |f|
+          f.write(metadata.to_json)
+        end
+
+        File.open(File.join(build_path, 'checksums.json'), 'w') do |f|
+          f.write(PSON.pretty_generate(Checksums.new(build_path)))
         end
       end
 

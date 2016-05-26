@@ -6,7 +6,9 @@
 require 'spec_helper'
 
 require 'puppet'
-require 'facter/util/plist'
+
+module Puppet::Util::Plist
+end
 
 provider_class = Puppet::Type.type(:macauthorization).provider(:macauthorization)
 
@@ -26,7 +28,8 @@ describe provider_class do
     authdb["rights"] = { "fooright" => "foo" }
 
     # Stub out Plist::parse_xml
-    Plist.stubs(:parse_xml).returns(authdb)
+    Puppet::Util::Plist.stubs(:parse_plist).returns(authdb)
+    Puppet::Util::Plist.stubs(:write_plist_file)
 
     # A catch all; no parameters set
     @resource.stubs(:[]).returns(nil)
@@ -40,19 +43,19 @@ describe provider_class do
   end
 
   it "should have a create method" do
-    @provider.should respond_to(:create)
+    expect(@provider).to respond_to(:create)
   end
 
   it "should have a destroy method" do
-    @provider.should respond_to(:destroy)
+    expect(@provider).to respond_to(:destroy)
   end
 
   it "should have an exists? method" do
-    @provider.should respond_to(:exists?)
+    expect(@provider).to respond_to(:exists?)
   end
 
   it "should have a flush method" do
-    @provider.should respond_to(:flush)
+    expect(@provider).to respond_to(:flush)
   end
 
   properties = [  :allow_root, :authenticate_user, :auth_class, :comment,
@@ -61,11 +64,11 @@ describe provider_class do
 
   properties.each do |prop|
     it "should have a #{prop.to_s} method" do
-      @provider.should respond_to(prop.to_s)
+      expect(@provider).to respond_to(prop.to_s)
     end
 
     it "should have a #{prop.to_s}= method" do
-      @provider.should respond_to(prop.to_s + "=")
+      expect(@provider).to respond_to(prop.to_s + "=")
     end
   end
 

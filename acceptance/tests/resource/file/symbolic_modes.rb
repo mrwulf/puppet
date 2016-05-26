@@ -1,9 +1,14 @@
 test_name "file resource: symbolic modes"
+confine :except, :platform => /^eos-/ # See ARISTA-37
+confine :except, :platform => /^solaris-10/
+confine :except, :platform => /^windows/
+confine :to, {}, hosts.select { |host| ! host[:roles].include?('master') }
 
-require 'test/unit/assertions'
+require 'puppet/acceptance/temp_file_utils'
+extend Puppet::Acceptance::TempFileUtils
 
 module FileModeAssertions
-  include Test::Unit::Assertions
+  include Beaker::DSL::Assertions
 
   def assert_create(agent, manifest, path, expected_mode)
     testcase.apply_manifest_on(agent, manifest) do
@@ -14,13 +19,13 @@ module FileModeAssertions
   end
 
   def assert_mode(agent, path, expected_mode)
-    current_mode = testcase.on(agent, "stat --format '%a' #{path}").stdout.chomp.to_i(8)
-    assert_equal(expected_mode, current_mode, "current mode #{current_mode.to_s(8)} doesn't match expected mode #{expected_mode.to_s(8)}")
+    permissions = testcase.stat(agent, path)
+    assert_equal(expected_mode, permissions[2], "current mode #{permissions[2].to_s(8)} doesn't match expected mode #{expected_mode.to_s(8)}")
   end
 
   def assert_mode_change(agent, manifest, path, symbolic_mode, start_mode, expected_mode)
     testcase.apply_manifest_on(agent, manifest) do
-      assert_match(/mode changed '#{'%04o' % start_mode}' to '#{'%04o' % expected_mode}'/, testcase.stdout,
+      assert_match(/mode changed '#{'%04o' % start_mode}'.* to '#{'%04o' % expected_mode}'/, testcase.stdout,
                    "couldn't set mode to #{symbolic_mode}")
     end
 
@@ -80,11 +85,8 @@ class ModifiesModeTest < ActionModeTest
 
     @start_mode = start_mode
 
-    user = agent['user']
-    group = agent['group'] || user
-
-    testcase.on(agent, "touch #{@file} && chown #{user}:#{group} #{@file} && chmod #{start_mode.to_s(8)} #{@file}")
-    testcase.on(agent, "mkdir -p #{@dir} && chown #{user}:#{group} #{@dir} && chmod #{start_mode.to_s(8)} #{@dir}")
+    testcase.on(agent, "touch #{@file} && chown symuser:symgroup #{@file} && chmod #{start_mode.to_s(8)} #{@file}")
+    testcase.on(agent, "mkdir -p #{@dir} && chown symuser:symgroup #{@dir} && chmod #{start_mode.to_s(8)} #{@dir}")
   end
 
   def assert_file_mode(expected_mode)
@@ -149,7 +151,7 @@ end
 #         For directories, the set-gid bit can
 #         only be set or cleared by using symbolic mode.
 
-# From http://www.gnu.org/software/coreutils/manual/html_node/Symbolic-Modes.html#Symbolic-Modes
+# From https://www.gnu.org/software/coreutils/manual/html_node/Symbolic-Modes.html#Symbolic-Modes
 # Users
 # u  the user who owns the file;
 # g  other users who are in the file's group;
@@ -177,11 +179,15 @@ end
 #     permissions locked while a program is accessing that file.
 #
 agents.each do |agent|
-  if agent['platform'].include?('windows')
-    Log.warn("Pending: this does not currently work on Windows")
-    next
-  end
   is_solaris = agent['platform'].include?('solaris')
+
+  on(agent, puppet("resource user symuser ensure=present"))
+  on(agent, puppet("resource group symgroup ensure=present"))
+
+  teardown do
+    on(agent, puppet("resource user symuser ensure=absent"))
+    on(agent, puppet("resource group symgroup ensure=absent"))
+  end
 
   basedir = agent.tmpdir('symbolic-modes')
   on(agent, "mkdir -p #{basedir}")
@@ -226,8 +232,9 @@ agents.each do |agent|
   test.assert_modifies('u+x',           00700, 00700, 00700)
   test.assert_modifies('u+x',           00600, 00700, 00700)
   test.assert_modifies('u+X',           00100, 00100, 00100)
-  test.assert_modifies('u+X',           00200, 00300, 00300)
-  test.assert_modifies('u+X',           00400, 00500, 00500)
+  test.assert_modifies('u+X',           00200, 00200, 00300)
+  test.assert_modifies('u+X',           00410, 00510, 00510)
+  test.assert_modifies('a+X',           00600, 00600, 00711)
   test.assert_modifies('a+X',           00700, 00711, 00711)
 
   test.assert_modifies('u+s',           00744, 04744, 04744)

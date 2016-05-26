@@ -45,19 +45,24 @@ Puppet::Type.newtype(:interface) do
       newvalues(:auto, :full, :half)
     end
 
+    newproperty(:access_vlan) do
+      desc "Interface static access vlan."
+      newvalues(/^\d+/)
+    end
+
     newproperty(:native_vlan) do
-      desc "Interface native vlan (for access mode only)."
+      desc "Interface native vlan when trunking."
       newvalues(/^\d+/)
     end
 
     newproperty(:encapsulation) do
       desc "Interface switchport encapsulation."
-      newvalues(:none, :dot1q, :isl )
+      newvalues(:none, :dot1q, :isl, :negotiate)
     end
 
     newproperty(:mode) do
       desc "Interface switchport mode."
-      newvalues(:access, :trunk)
+      newvalues(:access, :trunk, 'dynamic auto', 'dynamic desirable')
     end
 
     newproperty(:allowed_trunk_vlans) do
@@ -109,4 +114,8 @@ Puppet::Type.newtype(:interface) do
         super(currentvalue, newvalue)
       end
     end
+
+  def present?(current_values)
+    super && current_values[:ensure] != :shutdown
+  end
 end

@@ -20,6 +20,9 @@ Puppet::Type.newtype(:tidy) do
     desc "The path to the file or directory to manage.  Must be fully
       qualified."
     isnamevar
+    munge do |value|
+      File.expand_path(value)
+    end
   end
 
   newparam(:recurse) do
@@ -53,10 +56,10 @@ Puppet::Type.newtype(:tidy) do
 
       Example:
 
-          tidy { "/tmp":
-            age     => "1w",
+          tidy { '/tmp':
+            age     => '1w',
             recurse => 1,
-            matches => [ "[0-9]pub*.tmp", "*.temp", "tmpfile?" ]
+            matches => [ '[0-9]pub*.tmp', '*.temp', 'tmpfile?' ],
           }
 
       This removes files from `/tmp` if they are one week old or older,
@@ -250,7 +253,9 @@ Puppet::Type.newtype(:tidy) do
     else
       files = [self[:path]]
     end
-    result = files.find_all { |path| tidy?(path) }.collect { |path| mkfile(path) }.each { |file| notice "Tidying #{file.ref}" }.sort { |a,b| b[:path] <=> a[:path] }
+    found_files = files.find_all { |path| tidy?(path) }.collect { |path| mkfile(path) }
+    result = found_files.each { |file| debug "Tidying #{file.ref}" }.sort { |a,b| b[:path] <=> a[:path] }
+    notice "Tidying #{found_files.size} files"
 
     # No need to worry about relationships if we don't have rmdirs; there won't be
     # any directories.
@@ -260,7 +265,7 @@ Puppet::Type.newtype(:tidy) do
     # so that a directory is emptied before we try to remove it.
     files_by_name = result.inject({}) { |hash, file| hash[file[:path]] = file; hash }
 
-    files_by_name.keys.sort { |a,b| b <=> b }.each do |path|
+    files_by_name.keys.sort { |a,b| b <=> a }.each do |path|
       dir = ::File.dirname(path)
       next unless resource = files_by_name[dir]
       if resource[:require]
@@ -312,7 +317,7 @@ Puppet::Type.newtype(:tidy) do
 
   def stat(path)
     begin
-      ::File.lstat(path)
+      Puppet::FileSystem.lstat(path)
     rescue Errno::ENOENT => error
       info "File does not exist"
       return nil

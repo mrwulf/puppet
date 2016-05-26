@@ -3,7 +3,7 @@ require 'puppet/indirector/ldap'
 
 class Puppet::Node::Ldap < Puppet::Indirector::Ldap
   desc "Search in LDAP for node configuration information.  See
-  the [LDAP Nodes](http://projects.puppetlabs.com/projects/puppet/wiki/Ldap_Nodes) page for more information.  This will first
+  the [LDAP Nodes](https://docs.puppetlabs.com/guides/ldap_nodes.html) page for more information.  This will first
   search for whatever the certificate name is, then (if that name
   contains a `.`) for the short name, then `default`."
 
@@ -35,7 +35,7 @@ class Puppet::Node::Ldap < Puppet::Indirector::Ldap
       next unless info = name2hash(name)
 
       merge_parent(info) if info[:parent]
-      info[:environment] ||= request.environment.to_s
+      info[:environment] ||= request.environment
       node = info2node(request.key, info)
       break
     end
@@ -59,7 +59,7 @@ class Puppet::Node::Ldap < Puppet::Indirector::Ldap
 
     return infos.collect do |info|
       merge_parent(info) if info[:parent]
-      info[:environment] ||= request.environment.to_s
+      info[:environment] ||= request.environment
       info2node(info[:name], info)
     end
   end
@@ -75,7 +75,7 @@ class Puppet::Node::Ldap < Puppet::Indirector::Ldap
 
   # The attributes that Puppet will stack as array over the full
   # hierarchy.
-  def stacked_attributes(dummy_argument=:work_arround_for_ruby_GC_bug)
+  def stacked_attributes
     Puppet[:ldapstackedattrs].split(/\s*,\s*/)
   end
 

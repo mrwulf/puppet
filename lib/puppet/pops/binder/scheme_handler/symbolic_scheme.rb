@@ -6,7 +6,7 @@
 # @abstract
 # @api public
 #
-class Puppet::Pops::Binder::SchemeHandler::SymbolicScheme < Puppetx::Puppet::BindingsSchemeHandler
+class Puppet::Pops::Binder::SchemeHandler::SymbolicScheme < Puppet::Plugins::BindingSchemes::BindingsSchemeHandler
 
   # Shared implementation for module: and confdir: since the distinction is only in checks if a symbolic name
   # exists as a loadable file or not. Once this method is called it is assumed that the name is relative
@@ -19,10 +19,9 @@ class Puppet::Pops::Binder::SchemeHandler::SymbolicScheme < Puppetx::Puppet::Bin
     fqn = fqn_from_path(uri)[1]
     bindings = Puppet::Pops::Binder::BindingsLoader.provide(scope, fqn)
     raise ArgumentError, "Cannot load bindings '#{uri}' - no bindings found." unless bindings
-    # Must clone as the the rest mutates the model
+    # Must clone as the rest mutates the model
     cloned_bindings = Marshal.load(Marshal.dump(bindings))
-    # Give no effective categories (i.e. ok with whatever categories there is)
-    Puppet::Pops::Binder::BindingsFactory.contributed_bindings(fqn, cloned_bindings, nil)
+    Puppet::Pops::Binder::BindingsFactory.contributed_bindings(fqn, cloned_bindings)
   end
 
   # @api private

@@ -6,7 +6,7 @@ require 'puppet/property/ordered_list'
 require 'puppet/property/keyvalue'
 
 module Puppet
-  newtype(:user) do
+  Type.newtype(:user) do
     @doc = "Manage users.  This type is mostly built to manage system
       users, so it is lacking some features useful for managing normal
       users.
@@ -53,6 +53,12 @@ module Puppet
     feature :libuser,
       "Allows local users to be managed on systems that also use some other
        remote NSS method of managing accounts."
+
+    feature :manages_shell,
+      "The provider allows for setting shell and validates if possible"
+
+    feature :manages_loginclass,
+      "The provider can manage the login class for a user."
 
     newproperty(:ensure, :parent => Puppet::Property::Ensure) do
       newvalue(:present, :event => :user_created) do
@@ -124,8 +130,9 @@ module Puppet
     newproperty(:gid) do
       desc "The user's primary group.  Can be specified numerically or by name.
 
-        Note that users on Windows systems do not have a primary group; manage groups
-        with the `groups` attribute instead."
+        This attribute is not supported on Windows systems; use the `groups`
+        attribute instead. (On Windows, designating a primary group is only
+        meaningful for domain accounts, which Puppet does not currently manage.)"
 
       munge do |value|
         if value.is_a?(String) and value =~ /^[-0-9]+$/
@@ -163,9 +170,14 @@ module Puppet
 
     newproperty(:comment) do
       desc "A description of the user.  Generally the user's full name."
+      if RUBY_VERSION < "2.1.0"
+        munge do |v|
+          v.respond_to?(:force_encoding) ? v.force_encoding(Encoding::ASCII_8BIT) : v
+        end
+      end
     end
 
-    newproperty(:shell) do
+    newproperty(:shell, :required_features => :manages_shell) do
       desc "The user's login shell.  The shell must exist and be
         executable.
 
@@ -173,22 +185,26 @@ module Puppet
     end
 
     newproperty(:password, :required_features => :manages_passwords) do
-      desc %q{The user's password, in whatever encrypted format the local
-        system requires.
+      desc %q{The user's password, in whatever encrypted format the local system
+        requires. Consult your operating system's documentation for acceptable password
+        encryption formats and requirements.
 
-        * Most modern Unix-like systems use salted SHA1 password hashes. You can use
-          Puppet's built-in `sha1` function to generate a hash from a password.
-        * Mac OS X 10.5 and 10.6 also use salted SHA1 hashes.
-        * Mac OS X 10.7 (Lion) uses salted SHA512 hashes. The Puppet Labs [stdlib][]
-          module contains a `str2saltedsha512` function which can generate password
-          hashes for Lion.
+        * Mac OS X 10.5 and 10.6, and some older Linux distributions, use salted SHA1
+          hashes. You can use Puppet's built-in `sha1` function to generate a salted SHA1
+          hash from a password.
+        * Mac OS X 10.7 (Lion), and many recent Linux distributions, use salted SHA512
+          hashes. The Puppet Labs [stdlib][] module contains a `str2saltedsha512` function
+          which can generate password hashes for these operating systems.
+        * OS X 10.8 and higher use salted SHA512 PBKDF2 hashes. When managing passwords
+          on these systems, the `salt` and `iterations` attributes need to be specified as
+          well as the password.
         * Windows passwords can only be managed in cleartext, as there is no Windows API
           for setting the password hash.
 
         [stdlib]: https://github.com/puppetlabs/puppetlabs-stdlib/
 
-        Be sure to enclose any value that includes a dollar sign ($) in single
-        quotes (') to avoid accidental variable interpolation.}
+        Enclose any value that includes a dollar sign ($) in single quotes (') to avoid
+        accidental variable interpolation.}
 
       validate do |value|
         raise ArgumentError, "Passwords cannot include ':'" if value.is_a?(String) and value.include?(":")
@@ -261,6 +277,38 @@ module Puppet
         raise ArgumentError, "Group names must be provided as an array, not a comma-separated list." if value.include?(",")
         raise ArgumentError, "Group names must not be empty. If you want to specify \"no groups\" pass an empty array" if value.empty?
       end
+
+      def change_to_s(currentvalue, newvalue)
+        newvalue = newvalue.split(",") if newvalue != :absent
+
+        if provider.respond_to?(:groups_to_s)
+          # for Windows ADSI
+          # de-dupe the "newvalue" when the sync event message is generated,
+          # due to final retrieve called after the resource has been modified
+          newvalue = provider.groups_to_s(newvalue).split(',').uniq
+        end
+
+        super(currentvalue, newvalue)
+      end
+
+      # override Puppet::Property::List#retrieve
+      def retrieve
+        if provider.respond_to?(:groups_to_s)
+          # Windows ADSI groups returns SIDs, but retrieve needs names
+          # must return qualified names for SIDs for "is" value and puppet resource
+          return provider.groups_to_s(provider.groups).split(',')
+        end
+
+        super
+      end
+
+      def insync?(current)
+        if provider.respond_to?(:groups_insync?)
+          return provider.groups_insync?(current, @should)
+        end
+
+        super(current)
+      end
     end
 
     newparam(:name) do
@@ -287,7 +335,8 @@ module Puppet
     newparam(:system, :boolean => true, :parent => Puppet::Parameter::Boolean) do
       desc "Whether the user is a system user, according to the OS's criteria;
       on most platforms, a UID less than or equal to 500 indicates a system
-      user. Defaults to `false`."
+      user. This parameter is only used when the resource is created and will
+      not affect the UID when the user is present. Defaults to `false`."
 
       defaultto false
     end
@@ -315,8 +364,8 @@ module Puppet
     newproperty(:expiry, :required_features => :manages_expiry) do
       desc "The expiry date for this user. Must be provided in
            a zero-padded YYYY-MM-DD format --- e.g. 2010-02-19.
-           If you want to make sure the user account does never
-           expire, you can pass the special value `absent`."
+           If you want to ensure the user account never expires,
+           you can pass the special value `absent`."
 
       newvalues :absent
       newvalues /^\d{4}-\d{2}-\d{2}$/
@@ -536,14 +585,15 @@ module Puppet
     end
 
     newproperty(:salt, :required_features => :manages_password_salt) do
-      desc "This is the 32 byte salt used to generate the PBKDF2 password used in
-            OS X"
+      desc "This is the 32-byte salt used to generate the PBKDF2 password used in
+            OS X. This field is required for managing passwords on OS X >= 10.8."
     end
 
     newproperty(:iterations, :required_features => :manages_password_salt) do
       desc "This is the number of iterations of a chained computation of the
-            password hash (http://en.wikipedia.org/wiki/PBKDF2).  This parameter
-            is used in OS X"
+            [PBKDF2 password hash](https://en.wikipedia.org/wiki/PBKDF2). This parameter
+            is used in OS X, and is required for managing passwords on OS X 10.8 and
+            newer."
 
       munge do |value|
         if value.is_a?(String) and value =~/^[-0-9]+$/
@@ -557,9 +607,141 @@ module Puppet
     newparam(:forcelocal, :boolean => true,
             :required_features => :libuser,
             :parent => Puppet::Parameter::Boolean) do
-      desc "Forces the mangement of local accounts when accounts are also
+      desc "Forces the management of local accounts when accounts are also
             being managed by some other NSS"
       defaultto false
+    end
+
+    def generate
+      return [] if self[:purge_ssh_keys].empty?
+      find_unmanaged_keys
+    end
+
+    newparam(:purge_ssh_keys) do
+      desc "Whether to purge authorized SSH keys for this user if they are not managed
+        with the `ssh_authorized_key` resource type. Allowed values are:
+
+        * `false` (default) --- don't purge SSH keys for this user.
+        * `true` --- look for keys in the `.ssh/authorized_keys` file in the user's
+          home directory. Purge any keys that aren't managed as `ssh_authorized_key`
+          resources.
+        * An array of file paths --- look for keys in all of the files listed. Purge
+          any keys that aren't managed as `ssh_authorized_key` resources. If any of
+          these paths starts with `~` or `%h`, that token will be replaced with
+          the user's home directory."
+
+      defaultto :false
+
+      # Use Symbols instead of booleans until PUP-1967 is resolved.
+      newvalues(:true, :false)
+
+      validate do |value|
+        if [ :true, :false ].include? value.to_s.intern
+          return
+        end
+        value = [ value ] if value.is_a?(String)
+        if value.is_a?(Array)
+          value.each do |entry|
+
+            raise ArgumentError, "Each entry for purge_ssh_keys must be a string, not a #{entry.class}" unless entry.is_a?(String)
+
+            valid_home = Puppet::Util.absolute_path?(entry) || entry =~ %r{^~/|^%h/}
+            raise ArgumentError, "Paths to keyfiles must be absolute, not #{entry}" unless valid_home
+          end
+          return
+        end
+        raise ArgumentError, "purge_ssh_keys must be true, false, or an array of file names, not #{value.inspect}"
+      end
+
+      munge do |value|
+        # Resolve string, boolean and symbol forms of true and false to a
+        # single representation.
+        test_sym = value.to_s.intern
+        value = test_sym if [:true, :false].include? test_sym
+
+        return [] if value == :false
+        home = resource[:home]
+        if value == :true and not home
+          raise ArgumentError, "purge_ssh_keys can only be true for users with a defined home directory"
+        end
+
+        return [ "#{home}/.ssh/authorized_keys" ] if value == :true
+        # value is an array - munge each value
+        [ value ].flatten.map do |entry|
+          if entry =~ /^~|^%h/ and not home
+            raise ArgumentError, "purge_ssh_keys value '#{value}' meta character ~ or %h only allowed for users with a defined home directory"
+          end
+          entry.gsub!(/^~\//, "#{home}/")
+          entry.gsub!(/^%h\//, "#{home}/")
+          entry
+        end
+      end
+    end
+
+    newproperty(:loginclass, :required_features => :manages_loginclass) do
+      desc "The name of login class to which the user belongs."
+
+      validate do |value|
+        if value =~ /^\d+$/
+          raise ArgumentError, "Class name must be provided."
+        end
+      end
+    end
+
+    # Generate ssh_authorized_keys resources for purging. The key files are
+    # taken from the purge_ssh_keys parameter. The generated resources inherit
+    # all metaparameters from the parent user resource.
+    #
+    # @return [Array<Puppet::Type::Ssh_authorized_key] a list of resources
+    #   representing the found keys
+    # @see generate
+    # @api private
+    def find_unmanaged_keys
+      self[:purge_ssh_keys].
+        select { |f| File.readable?(f) }.
+        map { |f| unknown_keys_in_file(f) }.
+        flatten.each do |res|
+          res[:ensure] = :absent
+          res[:user] = self[:name]
+          @parameters.each do |name, param|
+            res[name] = param.value if param.metaparam?
+          end
+        end
+    end
+
+    # Parse an ssh authorized keys file superficially, extract the comments
+    # on the keys. These are considered names of possible ssh_authorized_keys
+    # resources. Keys that are managed by the present catalog are ignored.
+    #
+    # @see generate
+    # @api private
+    # @return [Array<Puppet::Type::Ssh_authorized_key] a list of resources
+    #   representing the found keys
+    def unknown_keys_in_file(keyfile)
+      names = []
+      name_index = 0
+      File.new(keyfile).each do |line|
+        next unless line =~ Puppet::Type.type(:ssh_authorized_key).keyline_regex
+        # the name is stored in the 4th capture of the regex
+        name = $4
+        if name.empty?
+          key = $3.delete("\n")
+          # If no comment is specified for this key, generate a unique internal
+          # name. This uses the same rules as
+          # provider/ssh_authorized_key/parsed (PUP-3357)
+          name = "#{keyfile}:unnamed-#{name_index += 1}"
+        end
+        names << name
+        Puppet.debug "#{self.ref} parsed for purging Ssh_authorized_key[#{name}]"
+      end
+
+      names.map { |keyname|
+        Puppet::Type.type(:ssh_authorized_key).new(
+          :name => keyname,
+          :target => keyfile)
+      }.reject { |res|
+        catalog.resource_refs.include? res.ref
+      }
     end
   end
 end

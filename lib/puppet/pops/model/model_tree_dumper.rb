@@ -7,7 +7,11 @@ class Puppet::Pops::Model::ModelTreeDumper < Puppet::Pops::Model::TreeDumper
     o.collect {|e| do_dump(e) }
   end
 
-  def dump_LiteralNumber o
+  def dump_LiteralFloat o
+    o.value.to_s
+  end
+
+  def dump_LiteralInteger o
     case o.radix
     when 10
       o.value.to_s
@@ -26,6 +30,10 @@ class Puppet::Pops::Model::ModelTreeDumper < Puppet::Pops::Model::TreeDumper
 
   def dump_Factory o
     do_dump(o.current)
+  end
+
+  def dump_Application o
+    ["application", o.name, do_dump(o.parameters), do_dump(o.body)]
   end
 
   def dump_ArithmeticExpression o
@@ -51,6 +59,17 @@ class Puppet::Pops::Model::ModelTreeDumper < Puppet::Pops::Model::TreeDumper
       result << :break << do_dump(ao)
     end
     result += [:dedent, :dedent ]
+    result
+  end
+
+  def dump_EppExpression o
+    result = ["epp"]
+#    result << ["parameters"] + o.parameters.collect {|p| do_dump(p) } if o.parameters.size() > 0
+    if o.body
+      result << do_dump(o.body)
+    else
+      result << []
+    end
     result
   end
 
@@ -86,14 +105,6 @@ class Puppet::Pops::Model::ModelTreeDumper < Puppet::Pops::Model::TreeDumper
     ["in", do_dump(o.left_expr), do_dump(o.right_expr)]
   end
 
-  def dump_ImportExpression o
-    ["import"] + o.files.collect {|f| do_dump(f) }
-  end
-
-  def dump_InstanceReferences o
-    ["instances", do_dump(o.type_name)] + o.names.collect {|n| do_dump(n) }
-  end
-
   def dump_AssignmentExpression o
     [o.operator.to_s, do_dump(o.left_expr), do_dump(o.right_expr)]
   end
@@ -101,6 +112,10 @@ class Puppet::Pops::Model::ModelTreeDumper < Puppet::Pops::Model::TreeDumper
   # Produces (name => expr) or (name +> expr)
   def dump_AttributeOperation o
     [o.attribute_name, o.operator, do_dump(o.value_expr)]
+  end
+
+  def dump_AttributesOperation o
+    ['* =>', do_dump(o.expr)]
   end
 
   def dump_LiteralList o
@@ -121,10 +136,6 @@ class Puppet::Pops::Model::ModelTreeDumper < Puppet::Pops::Model::TreeDumper
 
   def dump_LiteralString o
     "'#{o.value}'"
-  end
-
-  def dump_LiteralText o
-    o.value
   end
 
   def dump_LambdaExpression o
@@ -179,13 +190,24 @@ class Puppet::Pops::Model::ModelTreeDumper < Puppet::Pops::Model::TreeDumper
     ['-', do_dump(o.expr)]
   end
 
+  def dump_UnfoldExpression o
+    ['unfold', do_dump(o.expr)]
+  end
+
   def dump_BlockExpression o
-    ["block"] + o.statements.collect {|x| do_dump(x) }
+    result = ["block", :indent]
+    o.statements.each {|x| result << :break; result << do_dump(x) }
+    result << :dedent << :break
+    result
   end
 
   # Interpolated strings are shown as (cat seg0 seg1 ... segN)
   def dump_ConcatenatedString o
     ["cat"] + o.segments.collect {|x| do_dump(x)}
+  end
+
+  def dump_HeredocExpression(o)
+    result = ["@(#{o.syntax})", :indent, :break, do_dump(o.text_expr), :dedent, :break]
   end
 
   def dump_HostClassDefinition o
@@ -212,8 +234,19 @@ class Puppet::Pops::Model::ModelTreeDumper < Puppet::Pops::Model::TreeDumper
     result
   end
 
-  def dump_ResourceTypeDefinition o
-    result = ["define", o.name]
+  def dump_SiteDefinition o
+    result = ["site"]
+    if o.body
+      result << do_dump(o.body)
+    else
+      result << []
+    end
+    result
+  end
+
+  def dump_NamedDefinition o
+    # the nil must be replaced with a string
+    result = [nil, o.name]
     result << ["parameters"] + o.parameters.collect {|p| do_dump(p) } if o.parameters.size() > 0
     if o.body
       result << do_dump(o.body)
@@ -223,8 +256,19 @@ class Puppet::Pops::Model::ModelTreeDumper < Puppet::Pops::Model::TreeDumper
     result
   end
 
+  def dump_ResourceTypeDefinition o
+    result = dump_NamedDefinition(o)
+    result[0] = 'define'
+    result
+  end
+
+  def dump_CapabilityMapping o
+    [o.kind, do_dump(o.component), o.capability, do_dump(o.mappings)]
+  end
+
   def dump_ResourceOverrideExpression o
-    result = ["override", do_dump(o.resources), :indent]
+    form = o.form == :regular ? '' : o.form.to_s + "-"
+    result = [form+"override", do_dump(o.resources), :indent]
     o.operations.each do |p|
       result << :break << do_dump(p)
     end
@@ -232,17 +276,33 @@ class Puppet::Pops::Model::ModelTreeDumper < Puppet::Pops::Model::TreeDumper
     result
   end
 
+  def dump_ReservedWord o
+    [ 'reserved', o.word ]
+  end
+
   # Produces parameters as name, or (= name value)
   def dump_Parameter o
-    if o.value
-      ["=", o.name, do_dump(o.value)]
+    name_prefix = o.captures_rest ? '*' : ''
+    name_part = "#{name_prefix}#{o.name}"
+    if o.value && o.type_expr
+      ["=t", do_dump(o.type_expr), name_part, do_dump(o.value)]
+    elsif o.value
+      ["=", name_part, do_dump(o.value)]
+    elsif o.type_expr
+      ["t", do_dump(o.type_expr), name_part]
     else
-      o.name
+      name_part
     end
   end
 
   def dump_ParenthesizedExpression o
     do_dump(o.expr)
+  end
+
+  # Hides that Program exists in the output (only its body is shown), the definitions are just
+  # references to contained classes, resource types, and nodes
+  def dump_Program(o)
+    dump(o.body)
   end
 
   def dump_IfExpression o
@@ -306,6 +366,14 @@ class Puppet::Pops::Model::ModelTreeDumper < Puppet::Pops::Model::TreeDumper
     [o.operator.to_s, do_dump(o.left_expr), do_dump(o.right_expr)]
   end
 
+  def dump_RenderStringExpression o
+    ["render-s", " '#{o.value}'"]
+  end
+
+  def dump_RenderExpression o
+    ["render", do_dump(o.expr)]
+  end
+
   def dump_ResourceBody o
     result = [do_dump(o.title), :indent]
     o.operations.each do |p|
@@ -316,7 +384,8 @@ class Puppet::Pops::Model::ModelTreeDumper < Puppet::Pops::Model::TreeDumper
   end
 
   def dump_ResourceDefaultsExpression o
-    result = ["resource-defaults", do_dump(o.type_ref), :indent]
+    form = o.form == :regular ? '' : o.form.to_s + "-"
+    result = [form+"resource-defaults", do_dump(o.type_ref), :indent]
     o.operations.each do |p|
       result << :break << do_dump(p)
     end
@@ -340,6 +409,22 @@ class Puppet::Pops::Model::ModelTreeDumper < Puppet::Pops::Model::TreeDumper
 
   def dump_SelectorEntry o
     [do_dump(o.matching_expr), "=>", do_dump(o.value_expr)]
+  end
+
+  def dump_SubLocatedExpression o
+    ["sublocated", do_dump(o.expr)]
+  end
+
+  def dump_TypeAlias(o)
+    ['type-alias', o.name, do_dump(o.type_expr)]
+  end
+
+  def dump_TypeMapping(o)
+    ['type-mapping', do_dump(o.type_expr), do_dump(o.mapping_expr)]
+  end
+
+  def dump_TypeDefinition(o)
+    ['type-definition', o.name, o.parent, do_dump(o.body)]
   end
 
   def dump_Object o

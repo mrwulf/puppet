@@ -1,6 +1,9 @@
 test_name "should query all users"
+confine :except, :platform => /^cisco_/ # See PUP-5828
 
 agents.each do |agent|
+  next if agent == master
+
   step "query natively"
   users = agent.user_list
 

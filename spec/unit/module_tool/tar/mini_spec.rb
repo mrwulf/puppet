@@ -6,7 +6,7 @@ describe Puppet::ModuleTool::Tar::Mini, :if => (Puppet.features.minitar? and Pup
   let(:destdir)    { File.expand_path '/the/dest/dir' }
   let(:sourcedir)  { '/the/src/dir' }
   let(:destfile)   { '/the/dest/file.tar.gz' }
-  let(:minitar)    { described_class.new('nginx') }
+  let(:minitar)    { described_class.new }
 
   it "unpacks a tar file" do
     unpacks_the_entry(:file_start, 'thefile')
@@ -42,7 +42,7 @@ describe Puppet::ModuleTool::Tar::Mini, :if => (Puppet.features.minitar? and Pup
   end
 
   it "packs a tar file" do
-    writer = mock('GzipWriter')
+    writer = stub('GzipWriter')
 
     Zlib::GzipWriter.expects(:open).with(destfile).yields(writer)
     Archive::Tar::Minitar.expects(:pack).with(sourcedir, writer)
@@ -51,9 +51,10 @@ describe Puppet::ModuleTool::Tar::Mini, :if => (Puppet.features.minitar? and Pup
   end
 
   def unpacks_the_entry(type, name)
-    reader = mock('GzipReader')
+    reader = stub('GzipReader')
 
     Zlib::GzipReader.expects(:open).with(sourcefile).yields(reader)
-    Archive::Tar::Minitar.expects(:unpack).with(reader, destdir).yields(type, name, nil)
+    minitar.expects(:find_valid_files).with(reader).returns([name])
+    Archive::Tar::Minitar.expects(:unpack).with(reader, destdir, [name]).yields(type, name, nil)
   end
 end

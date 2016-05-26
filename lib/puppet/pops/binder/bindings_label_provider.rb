@@ -1,7 +1,9 @@
 # A provider of labels for bindings model object, producing a human name for the model object.
 # @api private
 #
-class Puppet::Pops::Binder::BindingsLabelProvider < Puppet::Pops::LabelProvider
+class Puppet::Pops::Binder::BindingsLabelProvider
+  include Puppet::Pops::LabelProvider
+
   def initialize
     @@label_visitor ||= Puppet::Pops::Visitor.new(self,"label",0,0)
   end
@@ -10,10 +12,10 @@ class Puppet::Pops::Binder::BindingsLabelProvider < Puppet::Pops::LabelProvider
   # @return [String] a human readable label
   #
   def label o
-   @@label_visitor.visit(o)
+   @@label_visitor.visit_this_0(self, o)
   end
 
-  def label_PObjectType o                       ; "#{Puppet::Pops::Types::TypeFactory.label(o)}" end
+  def label_PAnyType o                          ; "#{Puppet::Pops::Types::TypeFactory.label(o)}" end
   def label_ProducerDescriptor o                ; "Producer"                                     end
   def label_NonCachingProducerDescriptor o      ; "Non Caching Producer"                         end
   def label_ConstantProducerDescriptor o        ; "Producer['#{o.value}']"                       end
@@ -28,11 +30,8 @@ class Puppet::Pops::Binder::BindingsLabelProvider < Puppet::Pops::LabelProvider
   def label_HashMultibindProducerDescriptor o   ; "Hash Multibind Producer"                      end
   def label_Bindings o                          ; "Bindings"                                     end
   def label_NamedBindings o                     ; "Named Bindings"                               end
-  def label_Category o                          ; "Category '#{o.categorization}/#{o.value}'"    end
-  def label_CategorizedBindings o               ; "Categorized Bindings"                         end
   def label_LayeredBindings o                   ; "Layered Bindings"                             end
   def label_NamedLayer o                        ; "Layer '#{o.name}'"                            end
-  def label_EffectiveCategories o               ; "Effective Categories"                         end
   def label_ContributedBindings o               ; "Contributed Bindings"                         end
   def label_NamedArgument o                     ; "Named Argument"                               end
 
